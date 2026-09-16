@@ -1,0 +1,26 @@
+{
+  "name": "cyborg-job-pipeline",
+  "version": "1.0.0",
+  "description": "Automated AI job sourcing pipeline with Gemini-powered cold email drafting and Telegram delivery",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "ts-node src/index.ts",
+    "start:dry": "ts-node src/index.ts --dry-run",
+    "bot": "ts-node src/bot-daemon.ts"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.0",
+    "axios": "^1.7.0",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.0",
+    "node-telegram-bot-api": "^0.66.0",
+    "nodemailer": "^10.0.10"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/node-telegram-bot-api": "^0.64.0",
+    "@types/nodemailer": "^8.0.2",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.5.0"
+  }
+}
