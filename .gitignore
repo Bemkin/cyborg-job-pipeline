@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+seen_jobs.json
+drafts_cache.json
+*.log
+*.mp4
+.DS_Store
