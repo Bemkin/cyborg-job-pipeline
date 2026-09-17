@@ -6,6 +6,8 @@
   "scripts": {
     "start": "ts-node src/index.ts",
     "start:dry": "ts-node src/index.ts --dry-run",
+    "start:linkedin": "ts-node src/index.ts --linkedin-only",
+    "login:linkedin": "ts-node -e \"import { getLinkedInContext } from './src/scrapers/linkedin'; getLinkedInContext(true).then(({ context }) => { context.browser()?.close(); process.exit(0); });\"",
     "bot": "ts-node src/bot-daemon.ts"
   },
   "dependencies": {
@@ -14,7 +16,8 @@
     "cheerio": "^1.0.0",
     "dotenv": "^16.4.0",
     "node-telegram-bot-api": "^0.66.0",
-    "nodemailer": "^10.0.10"
+    "nodemailer": "^10.0.10",
+    "playwright": "^1.63.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

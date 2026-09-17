@@ -6,3 +6,4 @@ drafts_cache.json
 *.log
 *.mp4
 .DS_Store
+.linkedin-session/
