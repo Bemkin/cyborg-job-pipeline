@@ -7,6 +7,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { saveDraft, CachedDraft } from "./bot-daemon";
+import { scrapeLinkedInRecommendedJobs } from "./scrapers/linkedin";
 
 // ─────────────────────────────────────────────
 // Config
@@ -15,6 +16,10 @@ import { saveDraft, CachedDraft } from "./bot-daemon";
 dotenv.config();
 
 const DRY_RUN = process.argv.includes("--dry-run");
+const LINKEDIN_ONLY = process.argv.includes("--linkedin-only");
+const REMOTEOK_ONLY = process.argv.includes("--remoteok-only");
+const FORCE_LOGIN = process.argv.includes("--login");
+
 const SEEN_JOBS_PATH = path.join(__dirname, "..", "seen_jobs.json");
 const REMOTEOK_API = "https://remoteok.com/api";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
@@ -53,7 +58,22 @@ const TARGET_KEYWORDS: string[] = [
   "backend engineer",
 ];
 
-const CANDIDATE_CONTEXT = `I am Bemnet Kibret, Lead Full-Stack Engineer & Founder at Senselet (enterprise AI-powered inventory & ERP ecosystem). I weave autonomous agentic AI into core product workflows, having architected production systems with 15+ function-calling tools, multi-model failover, and localized AI integrations. I own the entire stack from concept to production—building multi-tenant architectures from scratch with 157 PostgreSQL migrations, offline-first queues, and idempotent webhook pipelines using Next.js, TypeScript, and Supabase. Additionally, I built FormCheck AI (real-time computer vision workout assistant) and lead pipeline automation architectures.`;
+// ─────────────────────────────────────────────
+// Candidate Context (Directly from Resume)
+// ─────────────────────────────────────────────
+
+const CANDIDATE_CONTEXT = `I am Bemnet Kibret, a high-agency Founding Full-Stack & AI Engineer specializing in taking complex, data-intensive platforms from zero to production.
+
+Key Highlights & Track Record:
+• Founder & Lead Engineer at Senselet: Architected and deployed an AI-native enterprise ERP from the ground up on AWS and Supabase, scaling across 3+ commercial retail clients to eliminate 20+ hours of weekly manual auditing across 10k+ active SKUs.
+• High-Stakes Decisioning & Agentic AI: Engineered a proprietary 15-tool agentic backend using native JSON-schema function calling and cascading LLM failover; automated 90%+ of routine reorder and financial allocation decisions, cutting turnaround from 45 min to <30 sec.
+• Mission-Critical Data Integrity: Designed an offline-first architecture utilizing a Dual-ID resolution layer via PostgreSQL; authored 157 strict migrations with org-scoped RLS to guarantee 0% data loss across 5+ warehouse locations.
+• Real-Time Cloud Pipelines: Built containerized Python and Node.js microservices on AWS (ECS/Lambda) with idempotent webhook handlers (sub-500ms execution latency, 99.9% deduplication reliability).
+• Backend Developer at Marvels Creative Technology: Architected & optimized 20+ RESTful API endpoints and server routes (TypeScript, Next.js), reducing response times by ~35%. Designed PostgreSQL schemas with Prisma ORM (sub-100ms latency), automated CI/CD API test suites with Jest.
+• AI Cockpit & Data Pipelines: Built AGY Telegram Bot (autonomous coding agent command center with Playwright visual checkpoints, streaming response, Cloudflare tunneling) and an Automated Data Enrichment RAG pipeline (5,000+ records, semantic search indexing, 99.2% extraction accuracy).
+
+Core Tech Stack:
+TypeScript, Next.js, React, Node.js, Python, PostgreSQL, Supabase (RLS, Edge Functions), AWS (ECS, Lambda), Docker, RAG, Vector Embeddings, Semantic Search, Function Calling, Cursor, Claude.`;
 
 // ─────────────────────────────────────────────
 // Types
@@ -76,15 +96,18 @@ interface RemoteOKJob {
   apply_url?: string;
 }
 
-interface ProcessedJob {
+export interface ProcessedJob {
   title: string;
   company: string;
   url: string;
   description: string;
   matchedKeywords: string[];
+  source?: "RemoteOK" | "LinkedIn";
+  isTopApplicant?: boolean;
+  contact?: ContactInfo | null;
 }
 
-interface ContactInfo {
+export interface ContactInfo {
   name: string;
   title: string;
   email: string | null;
@@ -101,10 +124,10 @@ function log(emoji: string, message: string): void {
 }
 
 // ─────────────────────────────────────────────
-// Job Fetching
+// Job Fetching: RemoteOK
 // ─────────────────────────────────────────────
 
-async function fetchJobs(): Promise<RemoteOKJob[]> {
+async function fetchRemoteOKJobs(): Promise<RemoteOKJob[]> {
   log("🔍", "Fetching jobs from RemoteOK...");
 
   try {
@@ -116,7 +139,6 @@ async function fetchJobs(): Promise<RemoteOKJob[]> {
       timeout: 15000,
     });
 
-    // RemoteOK API returns an array where the first element is metadata (legal notice)
     const jobs = response.data.filter(
       (item: RemoteOKJob) => item.position && item.company
     );
@@ -166,15 +188,16 @@ function localFilter(jobs: RemoteOKJob[]): ProcessedJob[] {
         job.apply_url ||
         `https://remoteok.com/remote-jobs/${job.slug || job.id || ""}`;
 
-      // Normalize domain to lowercase https://remoteok.com/ to prevent any redirect quirks
       const jobUrl = rawUrl.replace(/^https?:\/\/remoteok\.com/i, "https://remoteok.com");
 
       matched.push({
         title: job.position || "Unknown Position",
         company: job.company || "Unknown Company",
         url: jobUrl,
-        description: description.slice(0, 3000), // Cap description length for API calls
+        description: description.slice(0, 3000),
         matchedKeywords,
+        source: "RemoteOK",
+        isTopApplicant: false,
       });
     }
   }
@@ -228,14 +251,85 @@ function deduplicateJobs(
 // RocketReach Contact Enrichment
 // ─────────────────────────────────────────────
 
-async function findContact(companyName: string): Promise<ContactInfo | null> {
+async function findContact(
+  companyName: string,
+  preferredContact?: ContactInfo | null
+): Promise<ContactInfo | null> {
   const rrApiKey = process.env.ROCKETREACH_API_KEY;
+
+  // 1. Direct hiring team member lookup (from LinkedIn "Meet the hiring team")
+  if (preferredContact && preferredContact.name) {
+    log("🎯", `Targeting direct hiring team member: ${preferredContact.name} (${preferredContact.title}) at ${companyName}`);
+    if (!rrApiKey) {
+      return preferredContact;
+    }
+
+    try {
+      log("🔎", `Querying RocketReach for verified email of ${preferredContact.name}...`);
+      const response = await axios.post(
+        `${ROCKETREACH_API_BASE}/search`,
+        {
+          query: {
+            current_employer: [companyName],
+            name: preferredContact.name,
+          },
+          start: 1,
+          page_size: 1,
+        },
+        {
+          headers: {
+            "Api-Key": rrApiKey,
+            "Content-Type": "application/json",
+          },
+          timeout: 10000,
+        }
+      );
+
+      const profiles = response.data?.profiles;
+      if (profiles && profiles.length > 0) {
+        const person = profiles[0];
+        let verifiedEmail: string | null = null;
+        if (Array.isArray(person.emails)) {
+          for (const e of person.emails) {
+            const addr = typeof e === "string" ? e : e?.email;
+            if (addr && addr.includes("@")) {
+              verifiedEmail = addr;
+              break;
+            }
+          }
+        }
+
+        if (!verifiedEmail && person.id) {
+          log("🔎", `Looking up full contact details for ${preferredContact.name}...`);
+          verifiedEmail = await lookupContactEmail(person.id, rrApiKey);
+        }
+
+        const enriched: ContactInfo = {
+          name: preferredContact.name,
+          title: preferredContact.title || person.current_title || "Job Poster",
+          email: verifiedEmail && verifiedEmail.includes("@") ? verifiedEmail : null,
+          linkedinUrl: preferredContact.linkedinUrl || person.linkedin_url || null,
+        };
+
+        log("🎯", `Found email for hiring team member: ${enriched.name} (${enriched.title})`);
+        if (enriched.email) {
+          log("📧", `Email: ${enriched.email}`);
+        }
+        return enriched;
+      }
+    } catch (err) {
+      log("⚠️", `Direct RocketReach search for ${preferredContact.name} error: ${err}`);
+    }
+
+    return preferredContact;
+  }
+
+  // 2. Fallback title group search
   if (!rrApiKey) {
     log("⚠️", "ROCKETREACH_API_KEY not set, skipping contact enrichment");
     return null;
   }
 
-  // Try each title priority group until we find someone
   for (const titleGroup of ROCKETREACH_TITLE_PRIORITIES) {
     try {
       const response = await axios.post(
@@ -267,7 +361,6 @@ async function findContact(companyName: string): Promise<ContactInfo | null> {
           linkedinUrl: person.linkedin_url || null,
         };
 
-        // Extract verified email with '@' (ignore teaser domain strings)
         let verifiedEmail: string | null = null;
         if (Array.isArray(person.emails)) {
           for (const e of person.emails) {
@@ -279,7 +372,6 @@ async function findContact(companyName: string): Promise<ContactInfo | null> {
           }
         }
 
-        // If no verified email in search results, do a full profile lookup
         if (!verifiedEmail && person.id) {
           log("🔎", `Looking up full contact details for ${contact.name}...`);
           verifiedEmail = await lookupContactEmail(person.id, rrApiKey);
@@ -297,7 +389,6 @@ async function findContact(companyName: string): Promise<ContactInfo | null> {
       await delay(RR_RATE_LIMIT_MS);
     } catch (error) {
       if (axios.isAxiosError(error)) {
-        // 429 = rate limit, 403 = credits exhausted
         if (error.response?.status === 429) {
           log("⚠️", `RocketReach rate limited, retrying in 5s...`);
           await delay(5000);
@@ -329,7 +420,6 @@ async function lookupContactEmail(profileId: number, apiKey: string): Promise<st
 
     const status = response.data?.status;
 
-    // If lookup is still processing, poll up to 3 times
     if (status === "searching" || status === "incomplete") {
       for (let attempt = 0; attempt < 3; attempt++) {
         await delay(3000);
@@ -356,7 +446,6 @@ async function lookupContactEmail(profileId: number, apiKey: string): Promise<st
       return null;
     }
 
-    // Lookup complete
     const emails = response.data?.emails;
     if (emails?.length > 0) {
       const validWork = emails.find((e: any) => e.smtp_valid === "valid" && e.type === "professional");
@@ -378,17 +467,31 @@ async function lookupContactEmail(profileId: number, apiKey: string): Promise<st
 // Stage 2: AI Analysis & Email Drafting
 // ─────────────────────────────────────────────
 
-function buildPrompt(title: string, description: string, contact: ContactInfo | null): string {
+function buildPrompt(
+  title: string,
+  description: string,
+  contact: ContactInfo | null,
+  isTopApplicant?: boolean
+): string {
   const recipientContext = contact
     ? `Address the email directly to ${contact.name} (${contact.title}). Use their first name naturally.`
     : `Address the email to "Hiring Team" since no specific contact was found.`;
 
+  const topApplicantDirective = isTopApplicant
+    ? `\nNOTE: LinkedIn's qualification matching explicitly identified me as a TOP APPLICANT for this role based on my exact resume and skill profile. Write with high-confidence, founder-level authority highlighting the exact architectural synergies.\n`
+    : "";
+
   return `You are an expert technical recruiter and cold email copywriter. Analyze this job description against my profile.
+
+CRITICAL HARD FILTER — 100% REMOTE ONLY:
+The candidate is based in Addis Ababa, Ethiopia (+251) and works entirely remotely.
+If this job requires being physically on-site, in-person, in-office (e.g. London, New York City, San Francisco, Bengaluru) or is a hybrid role requiring physical office days, output exactly the word "SKIP" and nothing else.
+Only accept roles that are 100% remote, remote-first, or open to international/global remote contractors.
 
 If the job is a poor fit or a standard corporate role that wouldn't value high-velocity AI-assisted development, output exactly the word "SKIP" and nothing else.
 
-If it is a good fit, write a concise 3-sentence cold email pitching me for the role. Be specific to their exact needs. No fluff. No subject line. Just the email body.
-
+If it is a good fit and fully remote, write a concise 3-sentence cold email pitching me for the role. Be specific to their exact needs, referencing specific accomplishments from my background (e.g. agentic workflows, scalable Next.js/Supabase infra, 157 PostgreSQL migrations, or real-time pipelines). No fluff. No subject line. Just the email body.
+${topApplicantDirective}
 ${recipientContext}
 
 Job Title: ${title}
@@ -422,7 +525,7 @@ async function analyzeAndDraft(
       },
     });
 
-    const prompt = buildPrompt(job.title, job.description, contact);
+    const prompt = buildPrompt(job.title, job.description, contact, job.isTopApplicant);
     const result = await model.generateContent(prompt);
     const response = result.response;
     const text = response.text().trim();
@@ -432,7 +535,6 @@ async function analyzeAndDraft(
       return null;
     }
 
-    // Clean up any trailing sign-offs before appending the canonical signature
     const cleanedText = text
       .replace(/(Best regards|Best|Sincerely|Regards),?\s*(Bemnet|Bemnet Kibret)?\s*$/i, "")
       .trim();
@@ -468,18 +570,23 @@ function formatTelegramMessage(
     .map((kw) => kw.charAt(0).toUpperCase() + kw.slice(1))
     .join(", ");
 
+  const sourceBadge = job.source ? ` \\[${escapeMarkdown(job.source)}\\]` : "";
+  const topApplicantBanner = job.isTopApplicant
+    ? `🌟 *TOP APPLICANT MATCH \\(LinkedIn Verified\\)*\n`
+    : "";
+
   const lines: string[] = [
-    `🏢 *${escapeMarkdown(job.title)} — ${escapeMarkdown(job.company)}*`,
+    topApplicantBanner + `🏢 *${escapeMarkdown(job.title)} — ${escapeMarkdown(job.company)}*${sourceBadge}`,
     ``,
-    `🔗 [Apply Here](${job.url})`,
+    `🔗 [View & Apply Here](${job.url})`,
     ``,
     `🔑 *Matched Keywords:* ${escapeMarkdown(keywordsStr)}`,
   ];
 
-  // Add contact info if found
   if (contact) {
+    const roleLabel = job.source === "LinkedIn" ? "Hiring Team Member" : "Decision Maker";
     lines.push(``);
-    lines.push(`👤 *Decision Maker:*`);
+    lines.push(`👤 *${roleLabel}:*`);
     lines.push(`   Name: ${escapeMarkdown(contact.name)}`);
     lines.push(`   Title: ${escapeMarkdown(contact.title)}`);
     if (contact.email) {
@@ -491,15 +598,13 @@ function formatTelegramMessage(
   }
 
   lines.push(``);
-  lines.push(`✉️ *Personalized Draft Email:*`);
+  lines.push(`✉️ *Personalized Draft Email / Message:*`);
   lines.push(escapeMarkdown(draftEmail));
 
   return lines.join("\n");
 }
 
 function escapeMarkdown(text: string): string {
-  // Escape special markdown characters for Telegram MarkdownV2
-  // But preserve intentional formatting
   return text.replace(/([_\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
 }
 
@@ -521,7 +626,6 @@ async function sendToTelegram(
     });
     log("📬", "Message sent to Telegram (with action buttons)");
   } catch (error) {
-    // Fall back to plain text if markdown parsing fails
     log("⚠️", `MarkdownV2 failed, retrying as plain text: ${error}`);
     try {
       const plainMessage = message.replace(/\\([_\[\]()~`>#+\-=|{}.!\\])/g, "$1");
@@ -542,15 +646,15 @@ async function sendToTelegram(
 
 async function main(): Promise<void> {
   console.log("\n" + "═".repeat(60));
-  console.log("  🤖 CYBORG JOB SOURCING PIPELINE v2.0");
-  console.log("  📇 RocketReach Contact Enrichment Enabled");
+  console.log("  🤖 CYBORG JOB SOURCING PIPELINE v2.2");
+  console.log("  💼 Multi-Source: RemoteOK + LinkedIn Recommended");
+  console.log("  🌟 Top Applicant & Direct Hiring Team Matching");
   console.log("═".repeat(60));
 
   if (DRY_RUN) {
-    log("🏃", "DRY RUN MODE — No API calls or Telegram messages will be sent");
+    log("🏃", "DRY RUN MODE — No external emails or Telegram messages will be sent");
   }
 
-  // ── Validate env vars (skip in dry-run) ──
   const geminiKey = process.env.GEMINI_API_KEY;
   const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
   const telegramChatId = process.env.TELEGRAM_CHAT_ID;
@@ -570,77 +674,137 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     if (!rrApiKey) {
-      log("⚠️", "ROCKETREACH_API_KEY not set — contact enrichment will be skipped");
+      log("⚠️", "ROCKETREACH_API_KEY not set — contact email enrichment will be skipped");
     }
   }
 
-  // ── Step 1: Fetch jobs ──
-  const rawJobs = await fetchJobs();
-  if (rawJobs.length === 0) {
-    log("⚠️", "No jobs fetched. Exiting gracefully.");
+  const allCandidateJobs: ProcessedJob[] = [];
+
+  // ── Step 1a: Fetch RemoteOK Jobs ──
+  if (!LINKEDIN_ONLY) {
+    const rawJobs = await fetchRemoteOKJobs();
+    if (rawJobs.length > 0) {
+      const filtered = localFilter(rawJobs);
+      allCandidateJobs.push(...filtered);
+    }
+  }
+
+  // ── Step 1b: Fetch LinkedIn Recommended & Top Applicant Jobs ──
+  if (!REMOTEOK_ONLY) {
+    const sessionExists =
+      Boolean(process.env.LINKEDIN_LI_AT) ||
+      fs.existsSync(path.join(__dirname, "..", ".linkedin-session", "storageState.json"));
+
+    if (sessionExists || FORCE_LOGIN || LINKEDIN_ONLY) {
+      log("💼", "Fetching recommended & top applicant jobs from LinkedIn...");
+      try {
+        const linkedinJobs = await scrapeLinkedInRecommendedJobs(20, FORCE_LOGIN);
+        for (const lj of linkedinJobs) {
+          const descLower = lj.description.toLowerCase();
+          const titleLower = lj.title.toLowerCase();
+          const matchedKeywords = TARGET_KEYWORDS.filter(
+            (kw) => descLower.includes(kw.toLowerCase()) || titleLower.includes(kw.toLowerCase())
+          );
+
+          allCandidateJobs.push({
+            title: lj.title,
+            company: lj.company,
+            url: lj.url,
+            description: lj.description,
+            matchedKeywords:
+              matchedKeywords.length > 0
+                ? matchedKeywords
+                : lj.isTopApplicant
+                ? ["Top Applicant", "Full-Stack"]
+                : ["LinkedIn Recommended"],
+            source: "LinkedIn",
+            isTopApplicant: lj.isTopApplicant,
+            contact: lj.jobPoster
+              ? {
+                  name: lj.jobPoster.name,
+                  title: lj.jobPoster.title,
+                  email: null,
+                  linkedinUrl: lj.jobPoster.profileUrl || null,
+                }
+              : null,
+          });
+        }
+      } catch (err) {
+        log("⚠️", `LinkedIn scraping failed: ${err}`);
+      }
+    } else {
+      log("ℹ️", "LinkedIn session not active yet. Run 'npm run login:linkedin' to enable LinkedIn recommended jobs.");
+    }
+  }
+
+  if (allCandidateJobs.length === 0) {
+    log("⚠️", "No new candidate jobs collected across sources. Exiting.");
     return;
   }
 
-  // ── Step 2: Stage 1 local keyword filter ──
-  const filteredJobs = localFilter(rawJobs);
-  if (filteredJobs.length === 0) {
-    log("⚠️", "No jobs matched target keywords. Exiting.");
-    return;
-  }
-
-  // ── Step 3: Deduplication ──
+  // ── Step 2: Deduplication ──
   const seenJobs = loadSeenJobs();
-  const newJobs = deduplicateJobs(filteredJobs, seenJobs);
+  const newJobs = deduplicateJobs(allCandidateJobs, seenJobs);
   if (newJobs.length === 0) {
-    log("⚠️", "All matching jobs already seen. Nothing to do.");
+    log("⚠️", "All collected jobs have already been processed previously. Nothing to do.");
     return;
   }
+
+  // Sort jobs: Prioritize Top Applicant matches at the top of the queue
+  newJobs.sort((a, b) => (b.isTopApplicant ? 1 : 0) - (a.isTopApplicant ? 1 : 0));
 
   // ── Dry-run output ──
   if (DRY_RUN) {
     console.log("\n" + "─".repeat(60));
-    log("📋", `DRY RUN: ${newJobs.length} jobs would be processed:\n`);
+    log("📋", `DRY RUN: ${newJobs.length} jobs would be processed (Top Applicants prioritized):\n`);
     for (const job of newJobs) {
-      console.log(`  🏢 ${job.title} — ${job.company}`);
+      const topBadge = job.isTopApplicant ? " 🌟 [TOP APPLICANT]" : "";
+      const src = job.source ? ` [${job.source}]` : "";
+      console.log(`  🏢 ${job.title} — ${job.company}${src}${topBadge}`);
       console.log(`  🔗 ${job.url}`);
       console.log(`  🔑 Keywords: ${job.matchedKeywords.join(", ")}`);
-      console.log(`  📝 Description preview: ${job.description.slice(0, 150)}...`);
+      if (job.contact) {
+        console.log(`  👤 Hiring Team: ${job.contact.name} (${job.contact.title})`);
+      }
+      console.log(`  📝 Description: ${job.description.slice(0, 140)}...`);
       console.log("");
     }
     console.log("─".repeat(60));
-    log("🏁", "Dry run complete. No API calls were made.");
+    log("🏁", "Dry run complete. No external calls or Telegram messages were sent.");
     return;
   }
 
-  // ── Step 4: Initialize clients ──
+  // ── Step 3: Initialize clients ──
   const genAI = new GoogleGenerativeAI(geminiKey!);
   const bot = new TelegramBot(telegramToken!, { polling: false });
 
-  // ── Step 5: Process each job (RocketReach → AI analysis → Telegram) ──
+  // ── Step 4: Process each job (Contact enrichment → AI analysis → Telegram) ──
   let sentCount = 0;
   let skippedCount = 0;
   let errorCount = 0;
   let enrichedCount = 0;
+  let topApplicantSentCount = 0;
 
   console.log("\n" + "─".repeat(60));
   log("🧠", `Starting Stage 2 processing on ${newJobs.length} jobs...\n`);
 
   for (let i = 0; i < newJobs.length; i++) {
     const job = newJobs[i];
-    log("📌", `[${i + 1}/${newJobs.length}] Processing: "${job.title}" at ${job.company}`);
+    const topBadge = job.isTopApplicant ? " 🌟 [TOP APPLICANT]" : "";
+    const srcTag = job.source ? ` (${job.source})` : "";
+    log("📌", `[${i + 1}/${newJobs.length}] Processing: "${job.title}" at ${job.company}${srcTag}${topBadge}`);
 
-    // Step 5a: RocketReach contact lookup
+    // Step 4a: Contact enrichment (Direct hiring team or RocketReach)
     let contact: ContactInfo | null = null;
-    if (rrApiKey) {
-      log("🔎", `Searching RocketReach for decision-maker at ${job.company}...`);
-      contact = await findContact(job.company);
+    if (rrApiKey || job.contact) {
+      contact = await findContact(job.company, job.contact);
       if (contact) {
         enrichedCount++;
       }
       await delay(RR_RATE_LIMIT_MS);
     }
 
-    // Step 5b: AI analysis & personalized draft
+    // Step 4b: AI analysis & personalized draft
     const draftEmail = await analyzeAndDraft(job, genAI, contact);
 
     // Mark as seen regardless of outcome
@@ -649,10 +813,8 @@ async function main(): Promise<void> {
     if (draftEmail === null) {
       skippedCount++;
     } else {
-      // Generate unique jobId for callback buttons
       const jobId = crypto.createHash("md5").update(job.url).digest("hex").slice(0, 8);
 
-      // Save draft to local cache for one-tap sending
       const draftRecord: CachedDraft = {
         jobId,
         jobTitle: job.title,
@@ -675,6 +837,14 @@ async function main(): Promise<void> {
           { text: "✏️ Edit Draft", callback_data: `edit:${jobId}` },
           { text: "❌ Skip", callback_data: `skip:${jobId}` },
         ]);
+      } else if (contact?.linkedinUrl) {
+        inlineKeyboard.push([
+          { text: "💬 Message on LinkedIn", url: contact.linkedinUrl },
+          { text: "🔗 View Job", url: job.url },
+        ]);
+        inlineKeyboard.push([
+          { text: "❌ Dismiss", callback_data: `skip:${jobId}` },
+        ]);
       } else {
         inlineKeyboard.push([
           { text: "🔗 View & Apply", url: job.url },
@@ -682,25 +852,26 @@ async function main(): Promise<void> {
         ]);
       }
 
-      // Step 5c: Send to Telegram with contact info and buttons
+      // Step 4c: Send to Telegram
       const message = formatTelegramMessage(job, draftEmail, contact);
       await sendToTelegram(bot, telegramChatId!, message, inlineKeyboard);
       sentCount++;
+      if (job.isTopApplicant) topApplicantSentCount++;
     }
 
-    // Rate limit: wait between iterations (skip on last)
+    // Rate limit
     if (i < newJobs.length - 1) {
       log("⏳", `Rate limit pause (${RATE_LIMIT_MS / 1000}s)...`);
       await delay(RATE_LIMIT_MS);
     }
   }
 
-  // ── Step 6: Save state & report ──
+  // ── Step 5: Save state & report ──
   saveSeenJobs(seenJobs);
 
   console.log("\n" + "═".repeat(60));
   log("🏁", "Pipeline complete!");
-  console.log(`     📬 Sent to Telegram: ${sentCount}`);
+  console.log(`     📬 Sent to Telegram: ${sentCount} (${topApplicantSentCount} Top Applicant matches)`);
   console.log(`     📇 Contacts enriched: ${enrichedCount}`);
   console.log(`     🤖 AI-skipped (poor fit): ${skippedCount}`);
   console.log(`     ❌ Errors: ${errorCount}`);
