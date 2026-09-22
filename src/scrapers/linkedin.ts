@@ -212,27 +212,49 @@ export async function scrapeLinkedInRecommendedJobs(
   const scrapedJobs: LinkedInScrapedJob[] = [];
   const visitedUrls = new Set<string>();
 
-  // f_WT=2 filters strictly for Remote jobs on LinkedIn
-  const targetUrls = [
-    "https://www.linkedin.com/jobs/collections/top-applicant/?f_WT=2",
-    "https://www.linkedin.com/jobs/collections/recommended/?f_WT=2",
+  // Feeds: Top Applicant + Recommended + Active Keyword Searches for the 3 target CV tracks
+  const targetFeeds = [
+    {
+      name: "Top Applicant (Remote)",
+      url: "https://www.linkedin.com/jobs/collections/top-applicant/?f_WT=2",
+      isTopApplicantCollection: true,
+      maxFromThisFeed: 4,
+    },
+    {
+      name: "Recommended (Remote)",
+      url: "https://www.linkedin.com/jobs/collections/recommended/?f_WT=2",
+      isTopApplicantCollection: false,
+      maxFromThisFeed: 4,
+    },
+    {
+      name: "Full-Stack Track (Remote)",
+      url: "https://www.linkedin.com/jobs/search/?keywords=Full%20Stack%20Engineer%20OR%20Frontend%20Developer&f_WT=2&sortBy=DD",
+      isTopApplicantCollection: false,
+      maxFromThisFeed: 5,
+    },
+    {
+      name: "Backend Track (Remote)",
+      url: "https://www.linkedin.com/jobs/search/?keywords=Backend%20Engineer%20OR%20Node.js%20Developer&f_WT=2&sortBy=DD",
+      isTopApplicantCollection: false,
+      maxFromThisFeed: 5,
+    },
+    {
+      name: "Founding & AI Track (Remote)",
+      url: "https://www.linkedin.com/jobs/search/?keywords=Founding%20Engineer%20OR%20AI%20Engineer&f_WT=2&sortBy=DD",
+      isTopApplicantCollection: false,
+      maxFromThisFeed: 5,
+    },
   ];
 
   try {
-    for (const targetUrl of targetUrls) {
+    for (const feed of targetFeeds) {
       if (scrapedJobs.length >= maxJobs) break;
 
-      const isTopApplicantCollection = targetUrl.includes("top-applicant");
-      log(
-        "🌐",
-        `Navigating to LinkedIn: ${
-          isTopApplicantCollection ? "Top Applicant (Remote)" : "Recommended (Remote)"
-        }...`
-      );
+      log("🌐", `Navigating to LinkedIn: ${feed.name}...`);
 
-      await page.goto(targetUrl, {
+      await page.goto(feed.url, {
         waitUntil: "domcontentloaded",
-        timeout: 12000,
+        timeout: 15000,
       }).catch((e) => log("⚠️", `Navigation notice: ${e.message}`));
 
       await delay(2500);
@@ -326,8 +348,13 @@ export async function scrapeLinkedInRecommendedJobs(
 
       log("📋", `Found ${uniqueCards.length} unique job cards in this view.`);
 
+      let feedExtractedCount = 0;
       for (let i = 0; i < uniqueCards.length; i++) {
         if (scrapedJobs.length >= maxJobs) break;
+        if (feedExtractedCount >= feed.maxFromThisFeed) {
+          log("ℹ️", `Reached feed limit (${feed.maxFromThisFeed} jobs) for ${feed.name}`);
+          break;
+        }
 
         const card = uniqueCards[i];
         const canonicalUrl = `https://www.linkedin.com/jobs/view/${card.id}/`;
@@ -430,7 +457,7 @@ export async function scrapeLinkedInRecommendedJobs(
             continue;
           }
 
-          const isTop = card.isTopApplicant || isTopApplicantCollection;
+          const isTop = card.isTopApplicant || feed.isTopApplicantCollection;
           const topBadge = isTop ? " 🌟 [TOP APPLICANT]" : "";
 
           log(
@@ -450,6 +477,7 @@ export async function scrapeLinkedInRecommendedJobs(
             jobPoster,
           });
 
+          feedExtractedCount++;
           await delay(800);
         } catch (err) {
           log("⚠️", `Error processing card ${card.id}: ${err}`);
