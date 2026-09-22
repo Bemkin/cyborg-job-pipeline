@@ -22,6 +22,9 @@ export interface CachedDraft {
   createdAt: string;
   status?: "pending" | "sent" | "skipped";
   sentAt?: string;
+  track?: string;
+  resumeFilename?: string;
+  resumePath?: string;
 }
 
 const DRAFTS_FILE = path.join(__dirname, "..", "drafts_cache.json");
@@ -196,12 +199,21 @@ export async function startBotDaemon(): Promise<void> {
       try {
         await bot.answerCallbackQuery(query.id, { text: `✉️ Sending email to ${draft.recipientEmail}...` });
 
-        // Prepare PDF attachment if file exists
-        const attachments = fs.existsSync(RESUME_PATH)
+        // Prepare PDF attachment (persona-specific or default resume)
+        const pathToAttach =
+          draft.resumePath && fs.existsSync(draft.resumePath)
+            ? draft.resumePath
+            : RESUME_PATH;
+        const filenameToAttach =
+          draft.resumeFilename && draft.resumePath && fs.existsSync(draft.resumePath)
+            ? draft.resumeFilename
+            : RESUME_FILENAME;
+
+        const attachments = fs.existsSync(pathToAttach)
           ? [
               {
-                filename: RESUME_FILENAME,
-                path: RESUME_PATH,
+                filename: filenameToAttach,
+                path: pathToAttach,
                 contentType: "application/pdf",
               },
             ]
@@ -211,7 +223,7 @@ export async function startBotDaemon(): Promise<void> {
         await transporter.sendMail({
           from: `Bemnet Kibret <${GMAIL_USER}>`,
           to: draft.recipientEmail,
-          subject: draft.subject || `Founding Engineer / ${draft.jobTitle} — Bemnet Kibret`,
+          subject: draft.subject || `${draft.jobTitle} Application — Bemnet Kibret`,
           text: draft.draftEmail,
           attachments,
         });

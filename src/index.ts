@@ -8,6 +8,12 @@ import path from "path";
 import crypto from "crypto";
 import { saveDraft, CachedDraft } from "./bot-daemon";
 import { scrapeLinkedInRecommendedJobs } from "./scrapers/linkedin";
+import {
+  CandidatePersona,
+  detectCandidateTrack,
+  buildSenderSignature,
+  getResumeForPersona,
+} from "./data/candidatePersonas";
 
 // ─────────────────────────────────────────────
 // Config
@@ -49,6 +55,10 @@ const TARGET_KEYWORDS: string[] = [
   "saas",
   "full-stack",
   "fullstack",
+  "frontend",
+  "front-end",
+  "front end",
+  "react",
   "next.js",
   "nextjs",
   "supabase",
@@ -56,6 +66,14 @@ const TARGET_KEYWORDS: string[] = [
   "software engineer",
   "solutions architect",
   "backend engineer",
+  "backend",
+  "back-end",
+  "typescript",
+  "node",
+  "python",
+  "developer",
+  "web engineer",
+  "web developer",
 ];
 
 // ─────────────────────────────────────────────
@@ -471,26 +489,42 @@ function buildPrompt(
   title: string,
   description: string,
   contact: ContactInfo | null,
+  persona: CandidatePersona,
   isTopApplicant?: boolean
 ): string {
   const recipientContext = contact
-    ? `Address the email directly to ${contact.name} (${contact.title}). Use their first name naturally.`
-    : `Address the email to "Hiring Team" since no specific contact was found.`;
+    ? `Address the recipient directly as "${contact.name.split(" ")[0]}" (${contact.name}, ${contact.title}).`
+    : `Address the email to "Hiring Team" since no specific contact was identified.`;
 
   const topApplicantDirective = isTopApplicant
-    ? `\nNOTE: LinkedIn's qualification matching explicitly identified me as a TOP APPLICANT for this role based on my exact resume and skill profile. Write with high-confidence, founder-level authority highlighting the exact architectural synergies.\n`
+    ? `\nNOTE: LinkedIn qualification matching explicitly ranked me as a TOP APPLICANT for this role based on exact resume synergy. Reflect this strong alignment naturally without bragging.\n`
     : "";
 
-  return `You are an expert technical recruiter and cold email copywriter. Analyze this job description against my profile.
+  return `You are an expert technical recruiter and concise cold email copywriter. Analyze this job description against the candidate's profile.
 
-CRITICAL HARD FILTER — 100% REMOTE ONLY:
-The candidate is based in Addis Ababa, Ethiopia (+251) and works entirely remotely.
-If this job requires being physically on-site, in-person, in-office (e.g. London, New York City, San Francisco, Bengaluru) or is a hybrid role requiring physical office days, output exactly the word "SKIP" and nothing else.
-Only accept roles that are 100% remote, remote-first, or open to international/global remote contractors.
+CRITICAL HARD FILTER 1 — 100% REMOTE CONTRACT ONLY:
+The candidate is based in Addis Ababa, Ethiopia (+251) and operates 100% remotely.
+- If this role strictly requires on-site presence, hybrid office days (e.g. 2 days in office), or specifies geographic legal residency restrictions (e.g., "Must reside in UK", "US citizenship / Green Card required", "Must be physically based in Australia"), output exactly the word "SKIP" and nothing else.
+- If it is 100% remote, remote-first, worldwide remote, or open to international remote contractors, proceed.
 
-If the job is a poor fit or a standard corporate role that wouldn't value high-velocity AI-assisted development, output exactly the word "SKIP" and nothing else.
+CRITICAL HARD FILTER 2 — TECHNICAL ENGINEERING ROLES ONLY:
+- Must be a technical software engineering, web development, frontend, backend, full-stack, data engineering, systems, or AI engineering position.
+- If the role is non-technical (Sales, Clinical / Healthcare, Marketing, HR, Legal, Customer Support, Operations), output exactly the word "SKIP" and nothing else.
 
-If it is a good fit and fully remote, write a concise 3-sentence cold email pitching me for the role. Be specific to their exact needs, referencing specific accomplishments from my background (e.g. agentic workflows, scalable Next.js/Supabase infra, 157 PostgreSQL migrations, or real-time pipelines). No fluff. No subject line. Just the email body.
+BROAD INTAKE DIRECTIVE (DO NOT SKIP STANDARD ENGINEERING ROLES):
+- DO NOT SKIP standard Full-Stack, Frontend, Backend, or Software Engineer positions!
+- We actively WANT to apply to standard engineering roles at software companies, agencies, and SaaS platforms.
+- If the role matches web/software development (TypeScript, JavaScript, React, Next.js, Python, Node.js, SQL/PostgreSQL, APIs), ACCEPT IT and write the pitch.
+
+ACTIVE TRACK POSITIONING:
+Selected Persona Track: ${persona.displayName}
+${persona.pitchGuidance}
+
+WRITING INSTRUCTIONS:
+- Write a concise 3-sentence cold email pitching the candidate for this specific role.
+- Focus directly on their core technical requirements using proof points from the candidate context below.
+- End with a low-friction call-to-action (e.g. offering a brief 15-minute introductory call or code walkthrough).
+- No generic buzzwords, no placeholders, no subject line, no sign-off / signature. Just the 3-sentence body.
 ${topApplicantDirective}
 ${recipientContext}
 
@@ -499,8 +533,8 @@ Job Title: ${title}
 Job Description:
 ${description}
 
-Candidate Context:
-${CANDIDATE_CONTEXT}`;
+Candidate Context (${persona.displayName}):
+${persona.candidateContext}`;
 }
 
 export const SENDER_SIGNATURE = `Best regards,
@@ -515,34 +549,36 @@ async function analyzeAndDraft(
   job: ProcessedJob,
   genAI: GoogleGenerativeAI,
   contact: ContactInfo | null
-): Promise<string | null> {
+): Promise<{ draftEmail: string; persona: CandidatePersona } | null> {
   try {
     const model = genAI.getGenerativeModel({
       model: GEMINI_MODEL,
       generationConfig: {
         temperature: 0.3,
-        maxOutputTokens: 300,
+        maxOutputTokens: 350,
       },
     });
 
-    const prompt = buildPrompt(job.title, job.description, contact, job.isTopApplicant);
+    const persona = detectCandidateTrack(job.title, job.description);
+    const prompt = buildPrompt(job.title, job.description, contact, persona, job.isTopApplicant);
     const result = await model.generateContent(prompt);
     const response = result.response;
     const text = response.text().trim();
 
     if (text.toUpperCase() === "SKIP" || text.toUpperCase().startsWith("SKIP")) {
-      log("🤖", `AI skipped: "${job.title}" at ${job.company} (poor fit)`);
+      log("🤖", `AI skipped: "${job.title}" at ${job.company} (non-remote or non-technical)`);
       return null;
     }
 
     const cleanedText = text
-      .replace(/(Best regards|Best|Sincerely|Regards),?\s*(Bemnet|Bemnet Kibret)?\s*$/i, "")
+      .replace(/(Best regards|Best|Sincerely|Regards|Cheers),?\s*(Bemnet|Bemnet Kibret)?\s*$/i, "")
       .trim();
 
-    const fullEmail = `${cleanedText}\n\n${SENDER_SIGNATURE}`;
+    const signature = buildSenderSignature(persona);
+    const fullEmail = `${cleanedText}\n\n${signature}`;
 
-    log("🤖", `AI drafted email for: "${job.title}" at ${job.company}`);
-    return fullEmail;
+    log("🤖", `AI drafted email [${persona.badgeName}] for: "${job.title}" at ${job.company}`);
+    return { draftEmail: fullEmail, persona };
   } catch (error) {
     log("❌", `Gemini API error for "${job.title}": ${error}`);
     return null;
@@ -564,7 +600,9 @@ function delay(ms: number): Promise<void> {
 function formatTelegramMessage(
   job: ProcessedJob,
   draftEmail: string,
-  contact: ContactInfo | null
+  contact: ContactInfo | null,
+  persona: CandidatePersona,
+  subject: string
 ): string {
   const keywordsStr = job.matchedKeywords
     .map((kw) => kw.charAt(0).toUpperCase() + kw.slice(1))
@@ -577,6 +615,7 @@ function formatTelegramMessage(
 
   const lines: string[] = [
     topApplicantBanner + `🏢 *${escapeMarkdown(job.title)} — ${escapeMarkdown(job.company)}*${sourceBadge}`,
+    `🎯 *Track:* ${escapeMarkdown(persona.badgeName)}`,
     ``,
     `🔗 [View & Apply Here](${job.url})`,
     ``,
@@ -597,6 +636,8 @@ function formatTelegramMessage(
     }
   }
 
+  lines.push(``);
+  lines.push(`📄 *Subject:* ${escapeMarkdown(subject)}`);
   lines.push(``);
   lines.push(`✉️ *Personalized Draft Email / Message:*`);
   lines.push(escapeMarkdown(draftEmail));
@@ -805,15 +846,18 @@ async function main(): Promise<void> {
     }
 
     // Step 4b: AI analysis & personalized draft
-    const draftEmail = await analyzeAndDraft(job, genAI, contact);
+    const analysisResult = await analyzeAndDraft(job, genAI, contact);
 
     // Mark as seen regardless of outcome
     seenJobs.add(job.url);
 
-    if (draftEmail === null) {
+    if (analysisResult === null) {
       skippedCount++;
     } else {
+      const { draftEmail, persona } = analysisResult;
       const jobId = crypto.createHash("md5").update(job.url).digest("hex").slice(0, 8);
+      const subject = persona.buildSubject(job.title, job.company);
+      const resume = getResumeForPersona(persona, path.join(__dirname, ".."));
 
       const draftRecord: CachedDraft = {
         jobId,
@@ -822,10 +866,13 @@ async function main(): Promise<void> {
         recipientEmail: contact?.email || null,
         recipientName: contact?.name || null,
         draftEmail,
-        subject: `Founding Engineer / ${job.title} — Bemnet Kibret`,
+        subject,
         url: job.url,
         createdAt: new Date().toISOString(),
         status: "pending",
+        track: persona.key,
+        resumeFilename: resume.filename,
+        resumePath: resume.path,
       };
       saveDraft(draftRecord);
 
@@ -853,7 +900,7 @@ async function main(): Promise<void> {
       }
 
       // Step 4c: Send to Telegram
-      const message = formatTelegramMessage(job, draftEmail, contact);
+      const message = formatTelegramMessage(job, draftEmail, contact, persona, subject);
       await sendToTelegram(bot, telegramChatId!, message, inlineKeyboard);
       sentCount++;
       if (job.isTopApplicant) topApplicantSentCount++;
