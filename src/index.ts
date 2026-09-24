@@ -14,6 +14,7 @@ import {
   buildSenderSignature,
   getResumeForPersona,
 } from "./data/candidatePersonas";
+import { extractValidWorkEmail, verifyWithNeverBounce } from "./utils/emailValidator";
 
 // ─────────────────────────────────────────────
 // Config
@@ -269,6 +270,21 @@ function deduplicateJobs(
 // RocketReach Contact Enrichment
 // ─────────────────────────────────────────────
 
+async function verifyNeverBounceIfConfigured(email: string): Promise<string | null> {
+  const nbApiKey = process.env.NEVERBOUNCE_API_KEY;
+  if (!email || !nbApiKey || nbApiKey.trim() === "") {
+    return email;
+  }
+  log("🔍", `Querying NeverBounce API to verify mailbox for ${email}...`);
+  const nb = await verifyWithNeverBounce(email, nbApiKey);
+  if (!nb.valid) {
+    log("⚠️", `NeverBounce rejected ${email}: Mailbox is "${nb.result}" (${nb.reason}) — avoided bounce!`);
+    return null;
+  }
+  log("🛡️", `NeverBounce confirmed: ${email} is 100% active and deliverable!`);
+  return email;
+}
+
 async function findContact(
   companyName: string,
   preferredContact?: ContactInfo | null
@@ -307,31 +323,38 @@ async function findContact(
       if (profiles && profiles.length > 0) {
         const person = profiles[0];
         let verifiedEmail: string | null = null;
+
+        // Try extracting already-verified email from search profiles
         if (Array.isArray(person.emails)) {
-          for (const e of person.emails) {
-            const addr = typeof e === "string" ? e : e?.email;
-            if (addr && addr.includes("@")) {
-              verifiedEmail = addr;
-              break;
-            }
+          const validResult = extractValidWorkEmail(person.emails, companyName);
+          if (validResult) {
+            verifiedEmail = validResult.email;
           }
         }
 
+        // If not verified in search teaser, perform full profile lookup
         if (!verifiedEmail && person.id) {
           log("🔎", `Looking up full contact details for ${preferredContact.name}...`);
-          verifiedEmail = await lookupContactEmail(person.id, rrApiKey);
+          verifiedEmail = await lookupContactEmail(person.id, rrApiKey, companyName);
+        }
+
+        // Real-time verification via NeverBounce if configured
+        if (verifiedEmail) {
+          verifiedEmail = await verifyNeverBounceIfConfigured(verifiedEmail);
         }
 
         const enriched: ContactInfo = {
           name: preferredContact.name,
           title: preferredContact.title || person.current_title || "Job Poster",
-          email: verifiedEmail && verifiedEmail.includes("@") ? verifiedEmail : null,
+          email: verifiedEmail || null,
           linkedinUrl: preferredContact.linkedinUrl || person.linkedin_url || null,
         };
 
-        log("🎯", `Found email for hiring team member: ${enriched.name} (${enriched.title})`);
         if (enriched.email) {
+          log("🎯", `Found verified email for hiring team member: ${enriched.name} (${enriched.title})`);
           log("📧", `Email: ${enriched.email}`);
+        } else {
+          log("⚠️", `No deliverable corporate email found for ${enriched.name} at ${companyName} — preserved for LinkedIn outreach.`);
         }
         return enriched;
       }
@@ -381,25 +404,29 @@ async function findContact(
 
         let verifiedEmail: string | null = null;
         if (Array.isArray(person.emails)) {
-          for (const e of person.emails) {
-            const addr = typeof e === "string" ? e : e?.email;
-            if (addr && addr.includes("@")) {
-              verifiedEmail = addr;
-              break;
-            }
+          const validResult = extractValidWorkEmail(person.emails, companyName);
+          if (validResult) {
+            verifiedEmail = validResult.email;
           }
         }
 
         if (!verifiedEmail && person.id) {
           log("🔎", `Looking up full contact details for ${contact.name}...`);
-          verifiedEmail = await lookupContactEmail(person.id, rrApiKey);
+          verifiedEmail = await lookupContactEmail(person.id, rrApiKey, companyName);
         }
 
-        contact.email = verifiedEmail && verifiedEmail.includes("@") ? verifiedEmail : null;
+        // Real-time verification via NeverBounce if configured
+        if (verifiedEmail) {
+          verifiedEmail = await verifyNeverBounceIfConfigured(verifiedEmail);
+        }
 
-        log("🎯", `Found contact: ${contact.name} (${contact.title}) at ${companyName}`);
+        contact.email = verifiedEmail || null;
+
         if (contact.email) {
+          log("🎯", `Found contact: ${contact.name} (${contact.title}) at ${companyName}`);
           log("📧", `Email: ${contact.email}`);
+        } else {
+          log("⚠️", `No deliverable corporate email found for ${contact.name} at ${companyName} — preserved for LinkedIn outreach.`);
         }
         return contact;
       }
@@ -428,7 +455,7 @@ async function findContact(
   return null;
 }
 
-async function lookupContactEmail(profileId: number, apiKey: string): Promise<string | null> {
+async function lookupContactEmail(profileId: number, apiKey: string, companyName: string): Promise<string | null> {
   try {
     const response = await axios.get(`${ROCKETREACH_API_BASE}/lookupProfile`, {
       params: { id: profileId },
@@ -449,15 +476,8 @@ async function lookupContactEmail(profileId: number, apiKey: string): Promise<st
 
         if (pollResponse.data?.status === "complete") {
           const emails = pollResponse.data?.emails;
-          if (emails?.length > 0) {
-            const validWork = emails.find((e: any) => e.smtp_valid === "valid" && e.type === "professional");
-            if (validWork?.email && validWork.email.includes("@")) return validWork.email;
-            const valid = emails.find((e: any) => e.smtp_valid === "valid");
-            if (valid?.email && valid.email.includes("@")) return valid.email;
-            const fallback = emails[0].email || emails[0];
-            return typeof fallback === "string" && fallback.includes("@") ? fallback : null;
-          }
-          return null;
+          const match = extractValidWorkEmail(emails, companyName);
+          return match ? match.email : null;
         }
       }
       log("⚠️", `RocketReach lookup still processing after 3 polls, skipping`);
@@ -465,16 +485,8 @@ async function lookupContactEmail(profileId: number, apiKey: string): Promise<st
     }
 
     const emails = response.data?.emails;
-    if (emails?.length > 0) {
-      const validWork = emails.find((e: any) => e.smtp_valid === "valid" && e.type === "professional");
-      if (validWork?.email && validWork.email.includes("@")) return validWork.email;
-      const valid = emails.find((e: any) => e.smtp_valid === "valid");
-      if (valid?.email && valid.email.includes("@")) return valid.email;
-      const fallback = emails[0].email || emails[0];
-      return typeof fallback === "string" && fallback.includes("@") ? fallback : null;
-    }
-
-    return null;
+    const match = extractValidWorkEmail(emails, companyName);
+    return match ? match.email : null;
   } catch (error) {
     log("⚠️", `RocketReach lookup error: ${error}`);
     return null;
@@ -630,6 +642,8 @@ function formatTelegramMessage(
     lines.push(`   Title: ${escapeMarkdown(contact.title)}`);
     if (contact.email) {
       lines.push(`   Email: ${escapeMarkdown(contact.email)}`);
+    } else {
+      lines.push(`   Email: ⚠️ _No verified corporate email \\(use LinkedIn\\)_`);
     }
     if (contact.linkedinUrl) {
       lines.push(`   [LinkedIn Profile](${contact.linkedinUrl})`);
@@ -716,6 +730,11 @@ async function main(): Promise<void> {
     }
     if (!rrApiKey) {
       log("⚠️", "ROCKETREACH_API_KEY not set — contact email enrichment will be skipped");
+    }
+    if (process.env.NEVERBOUNCE_API_KEY) {
+      log("🛡️", "NeverBounce real-time email verification enabled");
+    } else {
+      log("ℹ️", "NEVERBOUNCE_API_KEY not set (optional) — using local domain & RocketReach SMTP validation");
     }
   }
 
