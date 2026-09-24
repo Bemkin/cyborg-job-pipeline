@@ -29,7 +29,7 @@ Applying manually to high-signal roles is broken: hopping between job boards, fi
 
 * **Targeted Role Sourcing**: Automatically scrapes and filters high-velocity remote engineering roles matching high-signal technical keywords (Agentic AI, TypeScript, Next.js, Postgres, Supabase).
 * **Executive Decision-Maker Discovery**: Integrates with the **RocketReach API** to bypass generic `jobs@` black holes. Automatically searches hierarchical title priorities (Founder, Co-Founder, CTO, VP Engineering, Head of People) to surface direct contacts.
-* **SMTP-Verified Contact Enrichment**: Resolves real, deliverable work emails with mailbox verification rather than generic domain teasers.
+* **Anti-Bounce & Domain Verification**: Performs company domain matching, blocks free webmail addresses, and integrates with **NeverBounce Single Check API v4** for real-time mailbox deliverability checks to protect your Gmail sender reputation.
 * **AI-Powered Pitch Synthesis**: Leverages **Google Gemini** with structured prompt engineering to analyze the company's tech stack and mission against your specific portfolio and production accomplishments, generating a concise, zero-fluff cold pitch.
 * **1-Tap Telegram Dispatch**: Delivers every vetted lead straight to your Telegram bot with interactive inline buttons:
   * `[ ✉️ Send Email ]` — Immediately dispatches the personalized pitch via Gmail SMTP with your **PDF resume attached**.
@@ -58,6 +58,7 @@ Applying manually to high-signal roles is broken: hopping between job boards, fi
 * A Telegram account and bot token (from [@BotFather](https://t.me/botfather))
 * A Google AI Studio API key (from [AI Studio](https://aistudio.google.com/apikey))
 * A RocketReach API key (from [RocketReach](https://rocketreach.co/api))
+* A NeverBounce API key (Optional real-time verification from [NeverBounce](https://neverbounce.com))
 * A Gmail account with 2-Step Verification enabled and an [App Password](https://myaccount.google.com/apppasswords)
 
 ### 2. Installation

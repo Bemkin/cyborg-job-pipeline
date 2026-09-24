@@ -3,7 +3,7 @@ import TelegramBot from "node-telegram-bot-api";
 import nodemailer from "nodemailer";
 import fs from "fs";
 import path from "path";
-import { validateCorporateEmail } from "./utils/emailValidator";
+import { validateCorporateEmail, verifyWithNeverBounce } from "./utils/emailValidator";
 
 dotenv.config();
 
@@ -224,6 +224,18 @@ export async function startBotDaemon(): Promise<void> {
           show_alert: true,
         });
         return;
+      }
+
+      const nbApiKey = process.env.NEVERBOUNCE_API_KEY;
+      if (nbApiKey && nbApiKey.trim() !== "") {
+        const nb = await verifyWithNeverBounce(draft.recipientEmail, nbApiKey);
+        if (!nb.valid) {
+          await bot.answerCallbackQuery(query.id, {
+            text: `⚠️ NeverBounce Safety Block: Address classified as "${nb.result}". Sending aborted to prevent bounce.`,
+            show_alert: true,
+          });
+          return;
+        }
       }
 
       try {
