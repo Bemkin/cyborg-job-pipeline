@@ -14,7 +14,7 @@ import {
   buildSenderSignature,
   getResumeForPersona,
 } from "./data/candidatePersonas";
-import { extractValidWorkEmail, verifyWithNeverBounce } from "./utils/emailValidator";
+import { extractValidWorkEmail, verifyWithNeverBounce, verifyWithVerimail } from "./utils/emailValidator";
 
 // ─────────────────────────────────────────────
 // Config
@@ -270,18 +270,40 @@ function deduplicateJobs(
 // RocketReach Contact Enrichment
 // ─────────────────────────────────────────────
 
-async function verifyNeverBounceIfConfigured(email: string): Promise<string | null> {
+async function verifyLiveEmailIfConfigured(email: string): Promise<string | null> {
+  const vmApiKey = process.env.VERIMAIL_API_KEY;
   const nbApiKey = process.env.NEVERBOUNCE_API_KEY;
-  if (!email || !nbApiKey || nbApiKey.trim() === "") {
+
+  if (vmApiKey && vmApiKey.trim() !== "") {
+    log("🔍", `Querying Verimail API to verify mailbox for ${email}...`);
+    const vm = await verifyWithVerimail(email, vmApiKey);
+    if (!vm.deliverable) {
+      if (vm.result === "error") {
+        log("⚠️", `Verimail notice (${vm.reason}) — safely falling back to local verification.`);
+        return email;
+      }
+      log("⚠️", `Verimail rejected ${email}: Mailbox is "${vm.result}" (${vm.reason}) — avoided hard bounce!`);
+      return null;
+    }
+    log("🛡️", `Verimail confirmed: ${email} is 100% active and deliverable!`);
     return email;
   }
-  log("🔍", `Querying NeverBounce API to verify mailbox for ${email}...`);
-  const nb = await verifyWithNeverBounce(email, nbApiKey);
-  if (!nb.valid) {
-    log("⚠️", `NeverBounce rejected ${email}: Mailbox is "${nb.result}" (${nb.reason}) — avoided bounce!`);
-    return null;
+
+  if (nbApiKey && nbApiKey.trim() !== "") {
+    log("🔍", `Querying NeverBounce API to verify mailbox for ${email}...`);
+    const nb = await verifyWithNeverBounce(email, nbApiKey);
+    if (!nb.valid) {
+      if (nb.result === "error") {
+        log("⚠️", `NeverBounce credit notice (${nb.reason}) — safely falling back to local verification.`);
+        return email;
+      }
+      log("⚠️", `NeverBounce rejected ${email}: Mailbox is "${nb.result}" (${nb.reason}) — avoided bounce!`);
+      return null;
+    }
+    log("🛡️", `NeverBounce confirmed: ${email} is 100% active and deliverable!`);
+    return email;
   }
-  log("🛡️", `NeverBounce confirmed: ${email} is 100% active and deliverable!`);
+
   return email;
 }
 
@@ -338,9 +360,9 @@ async function findContact(
           verifiedEmail = await lookupContactEmail(person.id, rrApiKey, companyName);
         }
 
-        // Real-time verification via NeverBounce if configured
+        // Real-time verification via Verimail / NeverBounce if configured
         if (verifiedEmail) {
-          verifiedEmail = await verifyNeverBounceIfConfigured(verifiedEmail);
+          verifiedEmail = await verifyLiveEmailIfConfigured(verifiedEmail);
         }
 
         const enriched: ContactInfo = {
@@ -415,9 +437,9 @@ async function findContact(
           verifiedEmail = await lookupContactEmail(person.id, rrApiKey, companyName);
         }
 
-        // Real-time verification via NeverBounce if configured
+        // Real-time verification via Verimail / NeverBounce if configured
         if (verifiedEmail) {
-          verifiedEmail = await verifyNeverBounceIfConfigured(verifiedEmail);
+          verifiedEmail = await verifyLiveEmailIfConfigured(verifiedEmail);
         }
 
         contact.email = verifiedEmail || null;
@@ -731,10 +753,12 @@ async function main(): Promise<void> {
     if (!rrApiKey) {
       log("⚠️", "ROCKETREACH_API_KEY not set — contact email enrichment will be skipped");
     }
-    if (process.env.NEVERBOUNCE_API_KEY) {
+    if (process.env.VERIMAIL_API_KEY) {
+      log("🛡️", "Verimail real-time email verification enabled (100 free/month)");
+    } else if (process.env.NEVERBOUNCE_API_KEY) {
       log("🛡️", "NeverBounce real-time email verification enabled");
     } else {
-      log("ℹ️", "NEVERBOUNCE_API_KEY not set (optional) — using local domain & RocketReach SMTP validation");
+      log("ℹ️", "Real-time email verification API not set (optional) — using local domain & RocketReach SMTP validation");
     }
   }
 

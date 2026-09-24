@@ -240,3 +240,65 @@ export async function verifyWithNeverBounce(
     };
   }
 }
+
+export interface VerimailResult {
+  valid: boolean;
+  result: string; // 'deliverable', 'hardbounce', 'undeliverable', 'disposable', etc.
+  deliverable: boolean;
+  reason?: string;
+  didYouMean?: string;
+}
+
+/**
+ * Validates an email address in real time using the Verimail API v3.
+ * Official docs: https://verimail.io/api
+ */
+export async function verifyWithVerimail(
+  email: string,
+  apiKey: string
+): Promise<VerimailResult> {
+  if (!email || !email.includes("@")) {
+    return { valid: false, result: "invalid_format", deliverable: false, reason: "Malformed email" };
+  }
+  if (!apiKey || apiKey.trim() === "") {
+    return { valid: false, result: "missing_key", deliverable: false, reason: "Missing VERIMAIL_API_KEY" };
+  }
+
+  try {
+    const response = await axios.get("https://api.verimail.io/v3/verify", {
+      params: {
+        email: email.trim(),
+        key: apiKey.trim(),
+      },
+      timeout: 8000,
+    });
+
+    const data = response.data;
+    if (data?.status === "success") {
+      const isDeliverable = Boolean(data.deliverable);
+      return {
+        valid: isDeliverable,
+        result: data.result || (isDeliverable ? "deliverable" : "undeliverable"),
+        deliverable: isDeliverable,
+        didYouMean: data.did_you_mean || undefined,
+        reason: isDeliverable ? undefined : `Verimail classified as "${data.result || "undeliverable"}" (code ${data.code})`,
+      };
+    }
+
+    return {
+      valid: false,
+      result: "error",
+      deliverable: false,
+      reason: data?.message || `Verimail returned status ${data?.status}`,
+    };
+  } catch (error: any) {
+    const errorMsg = error.response?.data?.message || error.message || String(error);
+    return {
+      valid: false,
+      result: "error",
+      deliverable: false,
+      reason: `Verimail API error: ${errorMsg}`,
+    };
+  }
+}
+
