@@ -3,6 +3,7 @@ import TelegramBot from "node-telegram-bot-api";
 import nodemailer from "nodemailer";
 import fs from "fs";
 import path from "path";
+import { validateCorporateEmail } from "./utils/emailValidator";
 
 dotenv.config();
 
@@ -127,6 +128,26 @@ export async function startBotDaemon(): Promise<void> {
 
   const bot = new TelegramBot(TELEGRAM_TOKEN!, { polling: true });
 
+  // Resilient network error handling (prevents crashes on sleep/wake or transient WiFi disconnects)
+  bot.on("polling_error", (error: any) => {
+    const msg = error?.message || String(error);
+    if (!msg.includes("ENOTFOUND") && !msg.includes("ETIMEDOUT") && !msg.includes("ECONNRESET") && !msg.includes("EFATAL")) {
+      console.warn("⚠️ Telegram polling notice:", msg);
+    }
+  });
+
+  bot.on("error", (error: any) => {
+    console.warn("⚠️ Telegram bot error notice:", error?.message || error);
+  });
+
+  process.on("uncaughtException", (err) => {
+    console.error("⚠️ Uncaught exception in bot daemon (kept alive):", err);
+  });
+
+  process.on("unhandledRejection", (reason) => {
+    console.error("⚠️ Unhandled rejection in bot daemon (kept alive):", reason);
+  });
+
   console.log("👂 Listening for button taps and Telegram commands...\n");
 
   // Command: /status
@@ -193,6 +214,15 @@ export async function startBotDaemon(): Promise<void> {
 
       if (!draft.recipientEmail || !draft.recipientEmail.includes("@")) {
         await bot.answerCallbackQuery(query.id, { text: "⚠️ No valid recipient email address available for this contact.", show_alert: true });
+        return;
+      }
+
+      const emailValidation = validateCorporateEmail(draft.recipientEmail, draft.company);
+      if (!emailValidation.valid) {
+        await bot.answerCallbackQuery(query.id, {
+          text: `⚠️ Safety Block: ${emailValidation.reason}. Sending aborted to prevent bounce and protect your sender reputation.`,
+          show_alert: true,
+        });
         return;
       }
 
