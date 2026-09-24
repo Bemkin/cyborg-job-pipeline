@@ -3,7 +3,7 @@ import TelegramBot from "node-telegram-bot-api";
 import nodemailer from "nodemailer";
 import fs from "fs";
 import path from "path";
-import { validateCorporateEmail, verifyWithNeverBounce } from "./utils/emailValidator";
+import { validateCorporateEmail, verifyWithNeverBounce, verifyWithVerimail } from "./utils/emailValidator";
 
 dotenv.config();
 
@@ -226,15 +226,33 @@ export async function startBotDaemon(): Promise<void> {
         return;
       }
 
-      const nbApiKey = process.env.NEVERBOUNCE_API_KEY;
-      if (nbApiKey && nbApiKey.trim() !== "") {
-        const nb = await verifyWithNeverBounce(draft.recipientEmail, nbApiKey);
-        if (!nb.valid) {
-          await bot.answerCallbackQuery(query.id, {
-            text: `⚠️ NeverBounce Safety Block: Address classified as "${nb.result}". Sending aborted to prevent bounce.`,
-            show_alert: true,
-          });
-          return;
+      const vmApiKey = process.env.VERIMAIL_API_KEY;
+      if (vmApiKey && vmApiKey.trim() !== "") {
+        const vm = await verifyWithVerimail(draft.recipientEmail, vmApiKey);
+        if (!vm.deliverable) {
+          if (vm.result !== "error") {
+            await bot.answerCallbackQuery(query.id, {
+              text: `⚠️ Verimail Safety Block: Mailbox is "${vm.result}". Sending aborted to prevent bounce!`,
+              show_alert: true,
+            });
+            return;
+          }
+          console.log(`⚠️ Verimail notice (${vm.reason}), proceeding with send via local verification.`);
+        }
+      } else {
+        const nbApiKey = process.env.NEVERBOUNCE_API_KEY;
+        if (nbApiKey && nbApiKey.trim() !== "") {
+          const nb = await verifyWithNeverBounce(draft.recipientEmail, nbApiKey);
+          if (!nb.valid) {
+            if (nb.result !== "error") {
+              await bot.answerCallbackQuery(query.id, {
+                text: `⚠️ NeverBounce Safety Block: Address classified as "${nb.result}". Sending aborted to prevent bounce.`,
+                show_alert: true,
+              });
+              return;
+            }
+            console.log(`⚠️ NeverBounce credit notice (${nb.reason}), proceeding with send via local verification.`);
+          }
         }
       }
 
