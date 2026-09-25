@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.example
+.linkedin-session
+.kilo
+*.log
+cyborg_task.xml
+run-bot.bat
+run-pipeline.bat
+start-bot-silent.vbs
+scripts
+README.md
