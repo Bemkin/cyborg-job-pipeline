@@ -11,6 +11,7 @@
     "login:linkedin": "ts-node -e \"import { getLinkedInContext } from './src/scrapers/linkedin'; getLinkedInContext(true).then(({ context }) => { context.browser()?.close(); process.exit(0); });\"",
     "bot": "ts-node src/bot-daemon.ts",
     "start:bot": "node dist/bot-daemon.js",
+    "sync:cloud": "ts-node -e \"import { loadDrafts, syncDraftToCloud } from './src/bot-daemon'; const url = process.env.RENDER_DAEMON_URL; if (!url) { console.error('❌ RENDER_DAEMON_URL is missing in .env'); process.exit(1); } syncDraftToCloud(url, Array.from(loadDrafts().values())).then(() => console.log('✅ Local drafts synced to Render cloud!'));\"",
     "build:resumes": "ts-node scripts/generate-resumes.ts"
   },
   "dependencies": {
