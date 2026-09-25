@@ -172,8 +172,18 @@ export async function sendEmail({
       redirect: "follow",
     });
 
-    const result = (await res.json()) as any;
-    if (!result.success) {
+    const rawText = await res.text();
+    let result: any = null;
+    try {
+      result = JSON.parse(rawText);
+    } catch {
+      // Google Apps Script redirect responses are frequently HTML wrapper pages
+      if (rawText.toLowerCase().includes("error") && !rawText.toLowerCase().includes("success")) {
+        throw new Error(`Google Apps Script error: ${rawText.slice(0, 150)}`);
+      }
+    }
+
+    if (result && result.success === false) {
       throw new Error(result.error || "Failed to send email via Google Apps Script HTTPS relay");
     }
     return;
