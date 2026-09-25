@@ -3,6 +3,8 @@ import TelegramBot from "node-telegram-bot-api";
 import nodemailer from "nodemailer";
 import fs from "fs";
 import path from "path";
+import http from "http";
+import axios from "axios";
 import { validateCorporateEmail, verifyWithNeverBounce, verifyWithVerimail } from "./utils/emailValidator";
 
 dotenv.config();
@@ -63,6 +65,27 @@ export function loadDrafts(): Map<string, CachedDraft> {
   return new Map();
 }
 
+export async function syncDraftToCloud(
+  baseUrl: string,
+  drafts: CachedDraft | CachedDraft[]
+): Promise<boolean> {
+  try {
+    const url = `${baseUrl.replace(/\/$/, "")}/api/draft`;
+    const secret = process.env.SYNC_SECRET;
+    await axios.post(url, drafts, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(secret ? { "x-sync-secret": secret } : {}),
+      },
+      timeout: 8000,
+    });
+    return true;
+  } catch (err: any) {
+    console.warn(`⚠️ Cloud draft sync notice: ${err.message}`);
+    return false;
+  }
+}
+
 export function saveDraft(draft: CachedDraft): void {
   const drafts = loadDrafts();
   drafts.set(draft.jobId, draft);
@@ -70,6 +93,12 @@ export function saveDraft(draft: CachedDraft): void {
     fs.writeFileSync(DRAFTS_FILE, JSON.stringify(Array.from(drafts.values()), null, 2));
   } catch (err) {
     console.error("❌ Failed to save draft:", err);
+  }
+
+  // If RENDER_DAEMON_URL is configured and we're not running inside Render, sync asynchronously
+  const cloudUrl = process.env.RENDER_DAEMON_URL || process.env.BOT_DAEMON_URL;
+  if (cloudUrl && !process.env.IS_RENDER_DAEMON) {
+    syncDraftToCloud(cloudUrl, draft).catch(() => {});
   }
 }
 
@@ -146,6 +175,115 @@ export async function startBotDaemon(): Promise<void> {
 
   process.on("unhandledRejection", (reason) => {
     console.error("⚠️ Unhandled rejection in bot daemon (kept alive):", reason);
+  });
+
+  // ─────────────────────────────────────────────
+  // HTTP Server (Render Free Tier Web Service & Keep-Alive)
+  // ─────────────────────────────────────────────
+  const PORT = process.env.PORT || 3000;
+  const SYNC_SECRET = process.env.SYNC_SECRET;
+
+  const server = http.createServer((req, res) => {
+    const parsedUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    const pathname = parsedUrl.pathname;
+
+    // CORS headers
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-sync-secret");
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    // Health check endpoint (for Render & keep-alive pinger)
+    if (req.method === "GET" && (pathname === "/" || pathname === "/health" || pathname === "/ping")) {
+      const drafts = loadDrafts();
+      const pending = Array.from(drafts.values()).filter((d) => d.status === "pending" || !d.status).length;
+      const sent = Array.from(drafts.values()).filter((d) => d.status === "sent").length;
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "online",
+          service: "cyborg-job-pipeline-daemon",
+          version: "2.1.0",
+          uptimeSeconds: Math.floor(process.uptime()),
+          stats: {
+            totalDrafts: drafts.size,
+            pendingDrafts: pending,
+            sentDrafts: sent,
+          },
+          timestamp: new Date().toISOString(),
+        })
+      );
+      return;
+    }
+
+    // Drafts query endpoint
+    if (req.method === "GET" && pathname === "/api/drafts") {
+      if (SYNC_SECRET && req.headers["x-sync-secret"] !== SYNC_SECRET) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Unauthorized: Invalid or missing x-sync-secret" }));
+        return;
+      }
+
+      const drafts = Array.from(loadDrafts().values());
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ drafts, count: drafts.length }));
+      return;
+    }
+
+    // Draft ingestion endpoint (from laptop or scraper pipeline)
+    if (req.method === "POST" && (pathname === "/api/draft" || pathname === "/api/drafts")) {
+      if (SYNC_SECRET && req.headers["x-sync-secret"] !== SYNC_SECRET) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Unauthorized: Invalid or missing x-sync-secret" }));
+        return;
+      }
+
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+
+      req.on("end", () => {
+        try {
+          const payload = JSON.parse(body);
+          const items: CachedDraft[] = Array.isArray(payload) ? payload : [payload];
+          const draftsMap = loadDrafts();
+
+          let savedCount = 0;
+          for (const item of items) {
+            if (item && item.jobId) {
+              draftsMap.set(item.jobId, item);
+              savedCount++;
+            }
+          }
+
+          fs.writeFileSync(DRAFTS_FILE, JSON.stringify(Array.from(draftsMap.values()), null, 2));
+          console.log(`[${new Date().toISOString().slice(11, 19)}] 📥 Ingested ${savedCount} draft(s) via HTTP API`);
+
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, count: savedCount }));
+        } catch (err: any) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid JSON payload", details: err.message }));
+        }
+      });
+      return;
+    }
+
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Not Found" }));
+  });
+
+  server.listen(Number(PORT), "0.0.0.0", () => {
+    console.log(`🌐 Web Service listening on http://0.0.0.0:${PORT} (Render Free Tier Ready)`);
+    console.log(`   Health check: GET /health`);
+    console.log(`   Draft sync:   POST /api/draft`);
   });
 
   console.log("👂 Listening for button taps and Telegram commands...\n");
@@ -260,14 +398,19 @@ export async function startBotDaemon(): Promise<void> {
         await bot.answerCallbackQuery(query.id, { text: `✉️ Sending email to ${draft.recipientEmail}...` });
 
         // Prepare PDF attachment (persona-specific or default resume)
-        const pathToAttach =
-          draft.resumePath && fs.existsSync(draft.resumePath)
-            ? draft.resumePath
-            : RESUME_PATH;
-        const filenameToAttach =
-          draft.resumeFilename && draft.resumePath && fs.existsSync(draft.resumePath)
-            ? draft.resumeFilename
-            : RESUME_FILENAME;
+        let pathToAttach = RESUME_PATH;
+        let filenameToAttach = RESUME_FILENAME;
+
+        if (draft.resumeFilename) {
+          const localRelativePath = path.join(__dirname, "..", draft.resumeFilename);
+          if (fs.existsSync(localRelativePath)) {
+            pathToAttach = localRelativePath;
+            filenameToAttach = draft.resumeFilename;
+          } else if (draft.resumePath && fs.existsSync(draft.resumePath)) {
+            pathToAttach = draft.resumePath;
+            filenameToAttach = draft.resumeFilename;
+          }
+        }
 
         const attachments = fs.existsSync(pathToAttach)
           ? [

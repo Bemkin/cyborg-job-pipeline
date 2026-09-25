@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: cyborg-job-pipeline-daemon
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: IS_RENDER_DAEMON
+        value: "true"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: VERIMAIL_API_KEY
+        sync: false
+      - key: NEVERBOUNCE_API_KEY
+        sync: false
+      - key: SYNC_SECRET
+        generateValue: true
