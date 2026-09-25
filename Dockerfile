@@ -38,8 +38,8 @@ COPY ["Bemnet Kibret - Backend Engineer Resume.pdf", "./"]
 COPY ["Bemnet Kibret - Founding Full-Stack Engineer Resume.pdf", "./"]
 COPY ["Bemnet Kibret - Full-Stack Engineer Resume.pdf", "./"]
 
-# Copy initial drafts cache
-COPY drafts_cache.json ./
+# Initialize empty drafts cache (drafts are populated dynamically via sync API)
+RUN echo "[]" > drafts_cache.json
 
 # Expose Render web service port
 EXPOSE 10000
