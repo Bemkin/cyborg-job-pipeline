@@ -121,11 +121,16 @@ export function updateDraft(jobId: string, updater: (d: CachedDraft) => void): C
 // ─────────────────────────────────────────────
 
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true, // Port 465 uses SSL/TLS
   auth: {
     user: GMAIL_USER,
     pass: GMAIL_PASS,
   },
+  connectionTimeout: 15000,
+  greetingTimeout: 15000,
+  socketTimeout: 20000,
 });
 
 // ─────────────────────────────────────────────
