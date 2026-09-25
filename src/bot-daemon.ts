@@ -117,7 +117,7 @@ export function updateDraft(jobId: string, updater: (d: CachedDraft) => void): C
 }
 
 // ─────────────────────────────────────────────
-// Email Transporter
+// Email Transporter & HTTPS Bridge
 // ─────────────────────────────────────────────
 
 const transporter = nodemailer.createTransport({
@@ -133,6 +133,62 @@ const transporter = nodemailer.createTransport({
   socketTimeout: 20000,
 });
 
+export async function sendEmail({
+  to,
+  subject,
+  body,
+  attachments = [],
+}: {
+  to: string;
+  subject: string;
+  body: string;
+  attachments?: { filename: string; path: string; contentType?: string }[];
+}): Promise<void> {
+  const webhookUrl = process.env.GMAIL_WEBHOOK_URL;
+
+  // If GMAIL_WEBHOOK_URL is set, use Google Apps Script HTTPS Bridge (bypasses Render's egress SMTP block)
+  if (webhookUrl && webhookUrl.trim() !== "") {
+    let attachmentBase64: string | undefined;
+    let attachmentFilename: string | undefined;
+
+    if (attachments.length > 0 && fs.existsSync(attachments[0].path)) {
+      attachmentBase64 = fs.readFileSync(attachments[0].path).toString("base64");
+      attachmentFilename = attachments[0].filename;
+    }
+
+    const payload = {
+      to,
+      subject,
+      body,
+      attachmentBase64,
+      attachmentFilename,
+      secret: process.env.SYNC_SECRET || "cyborg_secret_99",
+    };
+
+    const res = await fetch(webhookUrl.trim(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      redirect: "follow",
+    });
+
+    const result = (await res.json()) as any;
+    if (!result.success) {
+      throw new Error(result.error || "Failed to send email via Google Apps Script HTTPS relay");
+    }
+    return;
+  }
+
+  // Fallback to standard SMTP (for local runs on laptop or paid clouds)
+  await transporter.sendMail({
+    from: `Bemnet Kibret <${GMAIL_USER}>`,
+    to,
+    subject,
+    text: body,
+    attachments,
+  });
+}
+
 // ─────────────────────────────────────────────
 // Bot Daemon
 // ─────────────────────────────────────────────
@@ -147,17 +203,21 @@ const pendingEdits = new Map<number | string, PendingEdit>();
 export async function startBotDaemon(): Promise<void> {
   console.log("══════════════════════════════════════════════════");
   console.log("  🤖 CYBORG TELEGRAM BOT DAEMON (v2.1)");
-  console.log("  ✉️ Gmail SMTP One-Tap Dispatcher Active");
+  console.log("  ✉️ Gmail One-Tap Dispatcher Active");
   console.log("══════════════════════════════════════════════════");
 
-  // Verify SMTP
-  try {
-    console.log(`🔌 Testing Gmail SMTP credentials for ${GMAIL_USER}...`);
-    await transporter.verify();
-    console.log("✅ Gmail SMTP connection verified successfully!");
-  } catch (err) {
-    console.error("❌ Gmail SMTP verification failed:", err);
-    console.error("   Please check your GMAIL_USER and GMAIL_APP_PASSWORD.");
+  // Verify Email Delivery Channel
+  if (process.env.GMAIL_WEBHOOK_URL) {
+    console.log("🌐 Gmail Webhook HTTPS Bridge configured (Render Free Tier Egress Safe)");
+  } else {
+    try {
+      console.log(`🔌 Testing Gmail SMTP credentials for ${GMAIL_USER}...`);
+      await transporter.verify();
+      console.log("✅ Gmail SMTP connection verified successfully!");
+    } catch (err) {
+      console.warn("⚠️ Gmail SMTP notice:", err);
+      console.warn("   (Tip: If running on Render Free Tier, set GMAIL_WEBHOOK_URL to bypass SMTP port blocks)");
+    }
   }
 
   const bot = new TelegramBot(TELEGRAM_TOKEN!, { polling: true });
@@ -320,11 +380,10 @@ export async function startBotDaemon(): Promise<void> {
         ? [{ filename: RESUME_FILENAME, path: RESUME_PATH, contentType: "application/pdf" }]
         : [];
 
-      await transporter.sendMail({
-        from: `Bemnet Kibret <${GMAIL_USER}>`,
-        to: GMAIL_USER,
+      await sendEmail({
+        to: GMAIL_USER!,
         subject: "🤖 Cyborg Pipeline Test Email (with Attached Resume)",
-        text: `Hey Bemnet,\n\nThis is a verification test from your Cyborg Job Pipeline. Your Gmail SMTP integration, Telegram one-tap dispatch, and PDF resume attachment are fully operational!\n\nSent at: ${new Date().toISOString()}`,
+        body: `Hey Bemnet,\n\nThis is a verification test from your Cyborg Job Pipeline. Your Gmail integration, Telegram one-tap dispatch, and PDF resume attachment are fully operational!\n\nSent at: ${new Date().toISOString()}`,
         attachments: testAttachments,
       });
       await bot.sendMessage(chatId, `✅ *Test email with attached resume delivered to ${GMAIL_USER}!* Check your inbox.`, { parse_mode: "Markdown" });
@@ -427,12 +486,11 @@ export async function startBotDaemon(): Promise<void> {
             ]
           : [];
 
-        // Send the email via Gmail SMTP
-        await transporter.sendMail({
-          from: `Bemnet Kibret <${GMAIL_USER}>`,
+        // Send the email via Gmail Webhook Bridge (or SMTP fallback)
+        await sendEmail({
           to: draft.recipientEmail,
           subject: draft.subject || `${draft.jobTitle} Application — Bemnet Kibret`,
-          text: draft.draftEmail,
+          body: draft.draftEmail,
           attachments,
         });
 
