@@ -274,7 +274,9 @@ export async function startBotDaemon(): Promise<void> {
         JSON.stringify({
           status: "online",
           service: "cyborg-job-pipeline-daemon",
-          version: "2.1.0",
+          version: "2.2.0-gas-bridge",
+          emailChannel: process.env.GMAIL_WEBHOOK_URL ? "google-apps-script-webhook" : "smtp-direct",
+          hasWebhookUrl: Boolean(process.env.GMAIL_WEBHOOK_URL),
           uptimeSeconds: Math.floor(process.uptime()),
           stats: {
             totalDrafts: drafts.size,
