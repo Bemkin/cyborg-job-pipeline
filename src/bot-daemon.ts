@@ -1,39 +1,18 @@
 import dotenv from "dotenv";
 import TelegramBot from "node-telegram-bot-api";
 import nodemailer from "nodemailer";
-import fs from "fs";
-import path from "path";
 import http from "http";
-import axios from "axios";
 import crypto from "crypto";
 import { validateCorporateEmail, verifyWithNeverBounce, verifyWithVerimail } from "./utils/emailValidator";
+import { CachedDraft, loadDrafts, updateDraft, writeDrafts } from "./drafts";
+import { CandidateTrackKey, Profile, TRACK_KEYS, loadProfile } from "./profile";
+import { getPersona, loadResumeAttachment } from "./data/candidatePersonas";
 
 dotenv.config();
 
 // ─────────────────────────────────────────────
-// Types & Config
+// Config
 // ─────────────────────────────────────────────
-
-export interface CachedDraft {
-  jobId: string;
-  jobTitle: string;
-  company: string;
-  recipientEmail: string | null;
-  recipientName: string | null;
-  draftEmail: string;
-  subject: string;
-  url: string;
-  createdAt: string;
-  status?: "pending" | "sent" | "skipped";
-  sentAt?: string;
-  track?: string;
-  resumeFilename?: string;
-  resumePath?: string;
-}
-
-const DRAFTS_FILE = path.join(__dirname, "..", "drafts_cache.json");
-const RESUME_FILENAME = "Bemnet Kibret - Founding Full-Stack Engineer Resume.pdf";
-const RESUME_PATH = path.join(__dirname, "..", RESUME_FILENAME);
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = (process.env.TELEGRAM_CHAT_ID || "").trim();
@@ -41,19 +20,23 @@ const GMAIL_USER = process.env.GMAIL_USER;
 const GMAIL_PASS = (process.env.GMAIL_APP_PASSWORD || "").replace(/\s+/g, "");
 const SYNC_SECRET = (process.env.SYNC_SECRET || "").trim();
 
-if (!TELEGRAM_TOKEN) {
-  console.error("❌ TELEGRAM_BOT_TOKEN is missing in .env");
+function exitWithError(message: string): never {
+  console.error(`❌ ${message}`);
   process.exit(1);
 }
 
-if (!TELEGRAM_CHAT_ID) {
-  console.error("❌ TELEGRAM_CHAT_ID is missing in .env (the bot only answers this chat)");
-  process.exit(1);
-}
-
-if (process.env.GMAIL_WEBHOOK_URL && !SYNC_SECRET) {
-  console.error("❌ SYNC_SECRET is required when GMAIL_WEBHOOK_URL is set");
-  process.exit(1);
+function checkDaemonConfig(): Profile {
+  if (!TELEGRAM_TOKEN) exitWithError("TELEGRAM_BOT_TOKEN is missing in .env");
+  if (!TELEGRAM_CHAT_ID) exitWithError("TELEGRAM_CHAT_ID is missing in .env (the bot only answers this chat)");
+  if (!GMAIL_USER || !GMAIL_PASS) exitWithError("GMAIL_USER or GMAIL_APP_PASSWORD is missing in .env");
+  if (process.env.GMAIL_WEBHOOK_URL && !SYNC_SECRET) {
+    exitWithError("SYNC_SECRET is required when GMAIL_WEBHOOK_URL is set");
+  }
+  try {
+    return loadProfile();
+  } catch (err: any) {
+    exitWithError(err.message);
+  }
 }
 
 function isOwnerChat(chatId: number | string | undefined): boolean {
@@ -67,87 +50,13 @@ function hasValidSyncSecret(header: string | string[] | undefined): boolean {
   return given.length === expected.length && crypto.timingSafeEqual(given, expected);
 }
 
-// Only PDFs sitting directly in the project root can be attached; draft data
-// arrives over HTTP, so it must never be able to point at arbitrary files.
-function resolveResumeAttachment(filename: string | undefined): { filename: string; path: string } | null {
-  if (!filename || filename !== path.basename(filename) || !filename.toLowerCase().endsWith(".pdf")) {
-    return null;
-  }
-  const fullPath = path.join(__dirname, "..", filename);
-  return fs.existsSync(fullPath) ? { filename, path: fullPath } : null;
-}
-
-if (!GMAIL_USER || !GMAIL_PASS) {
-  console.error("❌ GMAIL_USER or GMAIL_APP_PASSWORD is missing in .env");
-  process.exit(1);
-}
-
-// ─────────────────────────────────────────────
-// Drafts Storage Helpers
-// ─────────────────────────────────────────────
-
-export function loadDrafts(): Map<string, CachedDraft> {
-  try {
-    if (fs.existsSync(DRAFTS_FILE)) {
-      const raw = fs.readFileSync(DRAFTS_FILE, "utf-8");
-      const list: CachedDraft[] = JSON.parse(raw);
-      return new Map(list.map((d) => [d.jobId, d]));
-    }
-  } catch (err) {
-    console.warn("⚠️ Failed to read drafts_cache.json, initializing empty map:", err);
-  }
-  return new Map();
-}
-
-export async function syncDraftToCloud(
-  baseUrl: string,
-  drafts: CachedDraft | CachedDraft[]
-): Promise<boolean> {
-  try {
-    const url = `${baseUrl.replace(/\/$/, "")}/api/draft`;
-    const secret = process.env.SYNC_SECRET;
-    await axios.post(url, drafts, {
-      headers: {
-        "Content-Type": "application/json",
-        ...(secret ? { "x-sync-secret": secret } : {}),
-      },
-      timeout: 8000,
-    });
-    return true;
-  } catch (err: any) {
-    console.warn(`⚠️ Cloud draft sync notice: ${err.message}`);
-    return false;
-  }
-}
-
-export function saveDraft(draft: CachedDraft): void {
-  const drafts = loadDrafts();
-  drafts.set(draft.jobId, draft);
-  try {
-    fs.writeFileSync(DRAFTS_FILE, JSON.stringify(Array.from(drafts.values()), null, 2));
-  } catch (err) {
-    console.error("❌ Failed to save draft:", err);
-  }
-
-  // If RENDER_DAEMON_URL is configured and we're not running inside Render, sync asynchronously
-  const cloudUrl = process.env.RENDER_DAEMON_URL || process.env.BOT_DAEMON_URL;
-  if (cloudUrl && !process.env.IS_RENDER_DAEMON) {
-    syncDraftToCloud(cloudUrl, draft).catch(() => {});
-  }
-}
-
-export function updateDraft(jobId: string, updater: (d: CachedDraft) => void): CachedDraft | null {
-  const drafts = loadDrafts();
-  const draft = drafts.get(jobId);
-  if (!draft) return null;
-  updater(draft);
-  drafts.set(jobId, draft);
-  try {
-    fs.writeFileSync(DRAFTS_FILE, JSON.stringify(Array.from(drafts.values()), null, 2));
-  } catch (err) {
-    console.error("❌ Failed to update draft:", err);
-  }
-  return draft;
+// The resume is chosen from the profile by track, never from a filename or path
+// in the draft itself: drafts arrive over HTTP and must not choose what gets attached.
+function personaForDraft(profile: Profile, draft: CachedDraft) {
+  const track = TRACK_KEYS.includes(draft.track as CandidateTrackKey)
+    ? (draft.track as CandidateTrackKey)
+    : profile.defaultPersona;
+  return getPersona(profile, track);
 }
 
 // ─────────────────────────────────────────────
@@ -167,16 +76,23 @@ const transporter = nodemailer.createTransport({
   socketTimeout: 20000,
 });
 
+export interface EmailAttachment {
+  filename: string;
+  content: Buffer;
+}
+
 export async function sendEmail({
+  fromName,
   to,
   subject,
   body,
   attachments = [],
 }: {
+  fromName: string;
   to: string;
   subject: string;
   body: string;
-  attachments?: { filename: string; path: string; contentType?: string }[];
+  attachments?: EmailAttachment[];
 }): Promise<void> {
   const webhookUrl = process.env.GMAIL_WEBHOOK_URL;
 
@@ -185,8 +101,8 @@ export async function sendEmail({
     let attachmentBase64: string | undefined;
     let attachmentFilename: string | undefined;
 
-    if (attachments.length > 0 && fs.existsSync(attachments[0].path)) {
-      attachmentBase64 = fs.readFileSync(attachments[0].path).toString("base64");
+    if (attachments.length > 0) {
+      attachmentBase64 = attachments[0].content.toString("base64");
       attachmentFilename = attachments[0].filename;
     }
 
@@ -225,11 +141,11 @@ export async function sendEmail({
 
   // Fallback to standard SMTP (for local runs on laptop or paid clouds)
   await transporter.sendMail({
-    from: `Bemnet Kibret <${GMAIL_USER}>`,
+    from: `${fromName} <${GMAIL_USER}>`,
     to,
     subject,
     text: body,
-    attachments,
+    attachments: attachments.map((a) => ({ ...a, contentType: "application/pdf" })),
   });
 }
 
@@ -245,6 +161,8 @@ interface PendingEdit {
 const pendingEdits = new Map<number | string, PendingEdit>();
 
 export async function startBotDaemon(): Promise<void> {
+  const profile = checkDaemonConfig();
+
   console.log("══════════════════════════════════════════════════");
   console.log("  🤖 CYBORG TELEGRAM BOT DAEMON (v2.1)");
   console.log("  ✉️ Gmail One-Tap Dispatcher Active");
@@ -373,7 +291,7 @@ export async function startBotDaemon(): Promise<void> {
             }
           }
 
-          fs.writeFileSync(DRAFTS_FILE, JSON.stringify(Array.from(draftsMap.values()), null, 2));
+          writeDrafts(draftsMap);
           console.log(`[${new Date().toISOString().slice(11, 19)}] 📥 Ingested ${savedCount} draft(s) via HTTP API`);
 
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -423,15 +341,15 @@ export async function startBotDaemon(): Promise<void> {
     if (!isOwnerChat(chatId)) return;
     try {
       await bot.sendMessage(chatId, `⏳ Sending test email to ${GMAIL_USER}...`);
-      const testAttachments = fs.existsSync(RESUME_PATH)
-        ? [{ filename: RESUME_FILENAME, path: RESUME_PATH, contentType: "application/pdf" }]
-        : [];
+      const resume = await loadResumeAttachment(getPersona(profile, profile.defaultPersona));
+      const firstName = profile.name.split(" ")[0];
 
       await sendEmail({
+        fromName: profile.name,
         to: GMAIL_USER!,
         subject: "🤖 Cyborg Pipeline Test Email (with Attached Resume)",
-        body: `Hey Bemnet,\n\nThis is a verification test from your Cyborg Job Pipeline. Your Gmail integration, Telegram one-tap dispatch, and PDF resume attachment are fully operational!\n\nSent at: ${new Date().toISOString()}`,
-        attachments: testAttachments,
+        body: `Hey ${firstName},\n\nThis is a verification test from your Cyborg Job Pipeline. Your Gmail integration, Telegram one-tap dispatch, and PDF resume attachment are fully operational!\n\nSent at: ${new Date().toISOString()}`,
+        attachments: resume ? [resume] : [],
       });
       await bot.sendMessage(chatId, `✅ *Test email with attached resume delivered to ${GMAIL_USER}!* Check your inbox.`, { parse_mode: "Markdown" });
     } catch (err: any) {
@@ -514,26 +432,19 @@ export async function startBotDaemon(): Promise<void> {
         await bot.answerCallbackQuery(query.id, { text: `✉️ Sending email to ${draft.recipientEmail}...` });
 
         // Prepare PDF attachment (persona-specific or default resume)
-        const personaResume = resolveResumeAttachment(draft.resumeFilename);
-        const pathToAttach = personaResume?.path ?? RESUME_PATH;
-        const filenameToAttach = personaResume?.filename ?? RESUME_FILENAME;
-
-        const attachments = fs.existsSync(pathToAttach)
-          ? [
-              {
-                filename: filenameToAttach,
-                path: pathToAttach,
-                contentType: "application/pdf",
-              },
-            ]
-          : [];
+        const persona = personaForDraft(profile, draft);
+        const resume = await loadResumeAttachment(persona);
+        if (!resume) {
+          console.warn(`⚠️ Resume "${persona.resume}" not found in profile folder and no resumeUrl set — sending without attachment.`);
+        }
 
         // Send the email via Gmail Webhook Bridge (or SMTP fallback)
         await sendEmail({
+          fromName: profile.name,
           to: draft.recipientEmail,
-          subject: draft.subject || `${draft.jobTitle} Application — Bemnet Kibret`,
+          subject: draft.subject || `${draft.jobTitle} Application — ${profile.name}`,
           body: draft.draftEmail,
-          attachments,
+          attachments: resume ? [resume] : [],
         });
 
         // Update draft state

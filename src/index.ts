@@ -6,14 +6,11 @@ import TelegramBot from "node-telegram-bot-api";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { saveDraft, CachedDraft } from "./bot-daemon";
+import { saveDraft, CachedDraft } from "./drafts";
 import { scrapeLinkedInRecommendedJobs } from "./scrapers/linkedin";
-import {
-  CandidatePersona,
-  detectCandidateTrack,
-  buildSenderSignature,
-  getResumeForPersona,
-} from "./data/candidatePersonas";
+import { CandidatePersona, detectCandidateTrack, buildSenderSignature } from "./data/candidatePersonas";
+import { DEFAULT_KEYWORDS, matchKeywords } from "./filters";
+import { Profile, loadProfile } from "./profile";
 import { extractValidWorkEmail, verifyWithNeverBounce, verifyWithVerimail } from "./utils/emailValidator";
 
 // ─────────────────────────────────────────────
@@ -41,58 +38,6 @@ const ROCKETREACH_TITLE_PRIORITIES = [
   ["Head of Engineering", "Engineering Director"],
   ["Recruiter", "Talent Acquisition", "Head of People"],
 ];
-
-const TARGET_KEYWORDS: string[] = [
-  "founding engineer",
-  "agentic",
-  "applied ai",
-  "ai solutions",
-  "ai-driven",
-  "ai platform",
-  "cursor",
-  "claude",
-  "ai-assisted",
-  "high-velocity",
-  "saas",
-  "full-stack",
-  "fullstack",
-  "frontend",
-  "front-end",
-  "front end",
-  "react",
-  "next.js",
-  "nextjs",
-  "supabase",
-  "postgres",
-  "software engineer",
-  "solutions architect",
-  "backend engineer",
-  "backend",
-  "back-end",
-  "typescript",
-  "node",
-  "python",
-  "developer",
-  "web engineer",
-  "web developer",
-];
-
-// ─────────────────────────────────────────────
-// Candidate Context (Directly from Resume)
-// ─────────────────────────────────────────────
-
-const CANDIDATE_CONTEXT = `I am Bemnet Kibret, a high-agency Founding Full-Stack & AI Engineer specializing in taking complex, data-intensive platforms from zero to production.
-
-Key Highlights & Track Record:
-• Founder & Lead Engineer at Senselet: Architected and deployed an AI-native enterprise ERP from the ground up on AWS and Supabase, scaling across 3+ commercial retail clients to eliminate 20+ hours of weekly manual auditing across 10k+ active SKUs.
-• High-Stakes Decisioning & Agentic AI: Engineered a proprietary 15-tool agentic backend using native JSON-schema function calling and cascading LLM failover; automated 90%+ of routine reorder and financial allocation decisions, cutting turnaround from 45 min to <30 sec.
-• Mission-Critical Data Integrity: Designed an offline-first architecture utilizing a Dual-ID resolution layer via PostgreSQL; authored 157 strict migrations with org-scoped RLS to guarantee 0% data loss across 5+ warehouse locations.
-• Real-Time Cloud Pipelines: Built containerized Python and Node.js microservices on AWS (ECS/Lambda) with idempotent webhook handlers (sub-500ms execution latency, 99.9% deduplication reliability).
-• Backend Developer at Marvels Creative Technology: Architected & optimized 20+ RESTful API endpoints and server routes (TypeScript, Next.js), reducing response times by ~35%. Designed PostgreSQL schemas with Prisma ORM (sub-100ms latency), automated CI/CD API test suites with Jest.
-• AI Cockpit & Data Pipelines: Built AGY Telegram Bot (autonomous coding agent command center with Playwright visual checkpoints, streaming response, Cloudflare tunneling) and an Automated Data Enrichment RAG pipeline (5,000+ records, semantic search indexing, 99.2% extraction accuracy).
-
-Core Tech Stack:
-TypeScript, Next.js, React, Node.js, Python, PostgreSQL, Supabase (RLS, Edge Functions), AWS (ECS, Lambda), Docker, RAG, Vector Embeddings, Semantic Search, Function Calling, Cursor, Claude.`;
 
 // ─────────────────────────────────────────────
 // Types
@@ -184,7 +129,7 @@ function extractTextFromHtml(html: string): string {
   return $.text().replace(/\s+/g, " ").trim();
 }
 
-function localFilter(jobs: RemoteOKJob[]): ProcessedJob[] {
+function localFilter(jobs: RemoteOKJob[], keywords: string[]): ProcessedJob[] {
   log("🔎", `Running Stage 1 local keyword filter on ${jobs.length} jobs...`);
 
   const matched: ProcessedJob[] = [];
@@ -195,11 +140,7 @@ function localFilter(jobs: RemoteOKJob[]): ProcessedJob[] {
     const descLower = description.toLowerCase();
     const tagsStr = (job.tags || []).join(" ").toLowerCase();
 
-    const searchText = `${position} ${descLower} ${tagsStr}`;
-
-    const matchedKeywords = TARGET_KEYWORDS.filter((kw) =>
-      searchText.includes(kw.toLowerCase())
-    );
+    const matchedKeywords = matchKeywords(keywords, position, descLower, tagsStr);
 
     if (matchedKeywords.length > 0) {
       let rawUrl =
@@ -523,6 +464,7 @@ function buildPrompt(
   title: string,
   description: string,
   contact: ContactInfo | null,
+  profile: Profile,
   persona: CandidatePersona,
   isTopApplicant?: boolean
 ): string {
@@ -534,12 +476,18 @@ function buildPrompt(
     ? `\nNOTE: LinkedIn qualification matching explicitly ranked me as a TOP APPLICANT for this role based on exact resume synergy. Reflect this strong alignment naturally without bragging.\n`
     : "";
 
+  const locationFilter = profile.remoteOnly
+    ? `CRITICAL HARD FILTER 1 — 100% REMOTE ONLY:
+The candidate is based in ${profile.location} and operates 100% remotely.
+- If this role strictly requires on-site presence, hybrid office days (e.g. 2 days in office), or specifies geographic legal residency restrictions (e.g., "Must reside in UK", "US citizenship / Green Card required", "Must be physically based in Australia"), output exactly the word "SKIP" and nothing else.
+- If it is 100% remote, remote-first, worldwide remote, or open to international remote contractors, proceed.`
+    : `CRITICAL HARD FILTER 1 — LOCATION:
+The candidate is based in ${profile.location}.
+- If this role requires on-site presence or legal residency somewhere the candidate clearly cannot work from, output exactly the word "SKIP" and nothing else.`;
+
   return `You are an expert technical recruiter and concise cold email copywriter. Analyze this job description against the candidate's profile.
 
-CRITICAL HARD FILTER 1 — 100% REMOTE CONTRACT ONLY:
-The candidate is based in Addis Ababa, Ethiopia (+251) and operates 100% remotely.
-- If this role strictly requires on-site presence, hybrid office days (e.g. 2 days in office), or specifies geographic legal residency restrictions (e.g., "Must reside in UK", "US citizenship / Green Card required", "Must be physically based in Australia"), output exactly the word "SKIP" and nothing else.
-- If it is 100% remote, remote-first, worldwide remote, or open to international remote contractors, proceed.
+${locationFilter}
 
 CRITICAL HARD FILTER 2 — TECHNICAL ENGINEERING ROLES ONLY:
 - Must be a technical software engineering, web development, frontend, backend, full-stack, data engineering, systems, or AI engineering position.
@@ -568,21 +516,14 @@ Job Description:
 ${description}
 
 Candidate Context (${persona.displayName}):
-${persona.candidateContext}`;
+${persona.context}`;
 }
-
-export const SENDER_SIGNATURE = `Best regards,
-Bemnet Kibret
-Lead Full-Stack & AI Engineer | Founder, Senselet
-GitHub: https://github.com/Bemkin
-LinkedIn: https://www.linkedin.com/in/bemnet-kibret-054a792a9/
-Portfolio: https://my-portfolio-theta-flame-45.vercel.app
-Live CV: https://my-portfolio-theta-flame-45.vercel.app/resume`;
 
 async function analyzeAndDraft(
   job: ProcessedJob,
   genAI: GoogleGenerativeAI,
-  contact: ContactInfo | null
+  contact: ContactInfo | null,
+  profile: Profile
 ): Promise<{ draftEmail: string; persona: CandidatePersona } | null> {
   try {
     const model = genAI.getGenerativeModel({
@@ -593,8 +534,8 @@ async function analyzeAndDraft(
       },
     });
 
-    const persona = detectCandidateTrack(job.title, job.description);
-    const prompt = buildPrompt(job.title, job.description, contact, persona, job.isTopApplicant);
+    const persona = detectCandidateTrack(profile, job.title, job.description);
+    const prompt = buildPrompt(job.title, job.description, contact, profile, persona, job.isTopApplicant);
     const result = await model.generateContent(prompt);
     const response = result.response;
     const text = response.text().trim();
@@ -604,11 +545,12 @@ async function analyzeAndDraft(
       return null;
     }
 
+    const names = `${escapeRegExp(profile.name)}|${escapeRegExp(profile.name.split(" ")[0])}`;
     const cleanedText = text
-      .replace(/(Best regards|Best|Sincerely|Regards|Cheers),?\s*(Bemnet|Bemnet Kibret)?\s*$/i, "")
+      .replace(new RegExp(`(Best regards|Best|Sincerely|Regards|Cheers),?\\s*(${names})?\\s*$`, "i"), "")
       .trim();
 
-    const signature = buildSenderSignature(persona);
+    const signature = buildSenderSignature(profile, persona);
     const fullEmail = `${cleanedText}\n\n${signature}`;
 
     log("🤖", `AI drafted email [${persona.badgeName}] for: "${job.title}" at ${job.company}`);
@@ -622,6 +564,10 @@ async function analyzeAndDraft(
 // ─────────────────────────────────────────────
 // Rate Limiter
 // ─────────────────────────────────────────────
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -728,6 +674,15 @@ async function main(): Promise<void> {
   console.log("  🌟 Top Applicant & Direct Hiring Team Matching");
   console.log("═".repeat(60));
 
+  let profile: Profile;
+  try {
+    profile = loadProfile();
+  } catch (err: any) {
+    log("❌", err.message);
+    process.exit(1);
+  }
+  const keywords = profile.keywords && profile.keywords.length > 0 ? profile.keywords : DEFAULT_KEYWORDS;
+
   if (DRY_RUN) {
     log("🏃", "DRY RUN MODE — No external emails or Telegram messages will be sent");
   }
@@ -768,7 +723,7 @@ async function main(): Promise<void> {
   if (!LINKEDIN_ONLY) {
     const rawJobs = await fetchRemoteOKJobs();
     if (rawJobs.length > 0) {
-      const filtered = localFilter(rawJobs);
+      const filtered = localFilter(rawJobs, keywords);
       allCandidateJobs.push(...filtered);
     }
   }
@@ -784,11 +739,7 @@ async function main(): Promise<void> {
       try {
         const linkedinJobs = await scrapeLinkedInRecommendedJobs(20, FORCE_LOGIN);
         for (const lj of linkedinJobs) {
-          const descLower = lj.description.toLowerCase();
-          const titleLower = lj.title.toLowerCase();
-          const matchedKeywords = TARGET_KEYWORDS.filter(
-            (kw) => descLower.includes(kw.toLowerCase()) || titleLower.includes(kw.toLowerCase())
-          );
+          const matchedKeywords = matchKeywords(keywords, lj.title, lj.description);
 
           allCandidateJobs.push({
             title: lj.title,
@@ -889,7 +840,7 @@ async function main(): Promise<void> {
     }
 
     // Step 4b: AI analysis & personalized draft
-    const analysisResult = await analyzeAndDraft(job, genAI, contact);
+    const analysisResult = await analyzeAndDraft(job, genAI, contact, profile);
 
     // Mark as seen regardless of outcome
     seenJobs.add(job.url);
@@ -899,8 +850,7 @@ async function main(): Promise<void> {
     } else {
       const { draftEmail, persona } = analysisResult;
       const jobId = crypto.createHash("md5").update(job.url).digest("hex").slice(0, 8);
-      const subject = persona.buildSubject(job.title, job.company);
-      const resume = getResumeForPersona(persona, path.join(__dirname, ".."));
+      const subject = persona.buildSubject(job.title);
 
       const draftRecord: CachedDraft = {
         jobId,
@@ -914,8 +864,7 @@ async function main(): Promise<void> {
         createdAt: new Date().toISOString(),
         status: "pending",
         track: persona.key,
-        resumeFilename: resume.filename,
-        resumePath: resume.path,
+        resumeFilename: persona.resume,
       };
       saveDraft(draftRecord);
 
@@ -972,7 +921,9 @@ async function main(): Promise<void> {
 // Entry Point
 // ─────────────────────────────────────────────
 
-main().catch((error) => {
-  log("💀", `Fatal unhandled error: ${error}`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    log("💀", `Fatal unhandled error: ${error}`);
+    process.exit(1);
+  });
+}

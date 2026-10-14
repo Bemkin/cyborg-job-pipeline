@@ -8,6 +8,9 @@ dist
 .kilo
 *.log
 cyborg_task.xml
+profile
+examples
+*.pdf
 run-bot.bat
 run-pipeline.bat
 start-bot-silent.vbs

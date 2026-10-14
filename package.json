@@ -1,7 +1,7 @@
 {
   "name": "cyborg-job-pipeline",
-  "version": "1.0.0",
-  "description": "Automated AI job sourcing pipeline with Gemini-powered cold email drafting and Telegram delivery",
+  "version": "2.2.0",
+  "description": "Human-in-the-loop job sourcing pipeline: finds roles, drafts tailored cold emails with Gemini, and sends them only after you approve each one in Telegram",
   "main": "src/index.ts",
   "scripts": {
     "build": "tsc",
@@ -11,8 +11,11 @@
     "login:linkedin": "ts-node -e \"import { getLinkedInContext } from './src/scrapers/linkedin'; getLinkedInContext(true).then(({ context }) => { context.browser()?.close(); process.exit(0); });\"",
     "bot": "ts-node src/bot-daemon.ts",
     "start:bot": "node dist/bot-daemon.js",
-    "sync:cloud": "ts-node -e \"import { loadDrafts, syncDraftToCloud } from './src/bot-daemon'; const url = process.env.RENDER_DAEMON_URL; if (!url) { console.error('❌ RENDER_DAEMON_URL is missing in .env'); process.exit(1); } syncDraftToCloud(url, Array.from(loadDrafts().values())).then(() => console.log('✅ Local drafts synced to Render cloud!'));\"",
-    "build:resumes": "ts-node scripts/generate-resumes.ts"
+    "sync:cloud": "ts-node -e \"import 'dotenv/config'; import { loadDrafts, syncDraftToCloud } from './src/drafts'; const url = process.env.RENDER_DAEMON_URL; if (!url) { console.error('❌ RENDER_DAEMON_URL is missing in .env'); process.exit(1); } syncDraftToCloud(url, Array.from(loadDrafts().values())).then(() => console.log('✅ Local drafts synced to Render cloud!'));\"",
+    "build:resumes": "ts-node scripts/generate-resumes.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "test:alert": "ts-node scripts/test-alert.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.0",
@@ -28,6 +31,15 @@
     "@types/node-telegram-bot-api": "^0.64.0",
     "@types/nodemailer": "^8.0.2",
     "ts-node": "^10.9.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.7"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Bemkin/cyborg-job-pipeline.git"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

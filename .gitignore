@@ -7,3 +7,9 @@ drafts_cache.json
 *.mp4
 .DS_Store
 .linkedin-session/
+
+# Your personal profile, resume data and PDFs (see examples/profile/)
+profile/
+*.pdf
+cyborg_task.xml
+.kilo/

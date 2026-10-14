@@ -33,10 +33,11 @@ RUN npm ci --omit=dev && npm cache clean --force
 # Copy compiled JavaScript output
 COPY --from=builder /app/dist ./dist
 
-# Copy candidate persona PDF resumes for cold email attachment
-COPY ["Bemnet Kibret - Backend Engineer Resume.pdf", "./"]
-COPY ["Bemnet Kibret - Founding Full-Stack Engineer Resume.pdf", "./"]
-COPY ["Bemnet Kibret - Full-Stack Engineer Resume.pdf", "./"]
+# Your profile is not baked into the image. Provide it at runtime:
+#   - Render: add profile.json as a Secret File (lands in /etc/secrets) and set PROFILE_DIR=/etc/secrets
+#   - Docker: docker run -v "$PWD/profile:/app/profile" ...
+# Resume PDFs are read from PROFILE_DIR, or downloaded from each persona's resumeUrl.
+ENV PROFILE_DIR=/app/profile
 
 # Initialize empty drafts cache (drafts are populated dynamically via sync API)
 RUN echo "[]" > drafts_cache.json

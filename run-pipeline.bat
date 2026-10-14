@@ -1,6 +1,6 @@
 @echo off
-cd /d "C:\Users\bemne\.gemini\antigravity-ide\scratch\cyborg-job-pipeline"
+cd /d "%~dp0"
 echo [%date% %time%] Pipeline started >> pipeline.log
 npm start >> pipeline.log 2>&1
 echo [%date% %time%] Pipeline finished >> pipeline.log
-echo ──────────────────────────────────── >> pipeline.log
+echo ------------------------------------ >> pipeline.log

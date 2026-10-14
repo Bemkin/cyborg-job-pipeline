@@ -1,6 +1,9 @@
 # 🤖 Cyborg Job Pipeline: Autonomous Sourcing & 1-Tap Cold Outreach
 
-> An end-to-end autonomous job hunting and executive outreach pipeline. Slices through noise to surface niche AI and Founding Engineer roles, identifies direct decision-makers (Founders, CTOs, VPs) with verified emails via RocketReach, synthesizes hyper-tailored pitches using Google Gemini, and dispatches cold emails directly from your phone with a single tap in Telegram.
+> A human-in-the-loop job hunting pipeline. It surfaces remote engineering roles, finds the decision-makers behind them (Founders, CTOs, VPs) with verified emails, drafts a tailored pitch with Google Gemini, and sends it from your Gmail **only after you tap Send in Telegram**.
+
+[![CI](https://github.com/Bemkin/cyborg-job-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/Bemkin/cyborg-job-pipeline/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ---
 
@@ -8,12 +11,12 @@
 
 Applying manually to high-signal roles is broken: hopping between job boards, finding founders on LinkedIn/Apollo, writing custom cover letters, and switching to your email client takes 30+ minutes per company.
 
-**Cyborg Job Pipeline** automates the entire friction loop while keeping you firmly in the driver's seat:
+**Cyborg Job Pipeline** automates the busywork while keeping you firmly in the driver's seat:
 
 ```
 ┌─────────────────┐       ┌──────────────────────┐       ┌──────────────────────┐
-│  Job Board API  │ ───▶  │ RocketReach API      │ ───▶  │ Google Gemini 3.5    │
-│  RemoteOK & RSS │       │ Founder / CTO Lookup │       │ Context-Aware Pitch  │
+│  Job Sources    │ ───▶  │ RocketReach API      │ ───▶  │ Google Gemini        │
+│ RemoteOK (+LI)  │       │ Founder / CTO Lookup │       │ Context-Aware Pitch  │
 └─────────────────┘       └──────────────────────┘       └──────────┬───────────┘
                                                                     │
                                                                     ▼
@@ -23,47 +26,54 @@ Applying manually to high-signal roles is broken: hopping between job boards, fi
 └─────────────────┘       └──────────────────────┘       └──────────────────────┘
 ```
 
+### Design principles
+
+- **You approve every email.** The pipeline only drafts. Nothing is sent until you tap Send, and the bot only responds to your own Telegram chat.
+- **Protect your sender reputation.** Free-webmail addresses and stale previous-employer domains are blocked, and NeverBounce/Verimail can verify mailboxes before sending.
+- **Your data stays yours.** Everything personal lives in a gitignored `profile/` folder, not in the code.
+
 ---
 
 ## 🚀 Key Features
 
-* **Targeted Role Sourcing**: Automatically scrapes and filters high-velocity remote engineering roles matching high-signal technical keywords (Agentic AI, TypeScript, Next.js, Postgres, Supabase).
-* **Executive Decision-Maker Discovery**: Integrates with the **RocketReach API** to bypass generic `jobs@` black holes. Automatically searches hierarchical title priorities (Founder, Co-Founder, CTO, VP Engineering, Head of People) to surface direct contacts.
-* **Anti-Bounce & Domain Verification**: Performs company domain matching, blocks free webmail addresses, and integrates with **NeverBounce Single Check API v4** for real-time mailbox deliverability checks to protect your Gmail sender reputation.
-* **AI-Powered Pitch Synthesis**: Leverages **Google Gemini** with structured prompt engineering to analyze the company's tech stack and mission against your specific portfolio and production accomplishments, generating a concise, zero-fluff cold pitch.
-* **1-Tap Telegram Dispatch**: Delivers every vetted lead straight to your Telegram bot with interactive inline buttons:
-  * `[ ✉️ Send Email ]` — Immediately dispatches the personalized pitch via Gmail SMTP with your **PDF resume attached**.
-  * `[ ✏️ Edit Draft ]` — Prompts you in Telegram to reply with custom tweaks before sending.
-  * `[ ❌ Skip ]` — Dismisses the lead cleanly.
-* **Persistent Bot Daemon**: Lightweight Node.js service running in the background, listening for button taps and Telegram commands (`/status`, `/testemail`).
-* **Deterministic Deduplication**: Maintains local cache state to ensure you never process or receive duplicate job alerts.
+* **Targeted Role Sourcing**: Pulls remote engineering roles from RemoteOK and filters them by your keywords.
+* **Decision-Maker Discovery**: Uses the **RocketReach API** to skip generic `jobs@` inboxes, searching title priorities (Founder, CTO, VP Engineering, Head of People) for a direct contact.
+* **Anti-Bounce Verification**: Company domain matching, free-webmail blocking, and optional **NeverBounce** / **Verimail** real-time checks.
+* **Multiple Personas**: Define full-stack, backend and founding/AI variants of your pitch and resume; each job is routed to the best fit automatically.
+* **AI-Powered Pitch Synthesis**: **Google Gemini** writes a concise, specific 3-sentence pitch from your profile, and skips roles that don't fit (non-technical, or on-site when you're remote-only).
+* **1-Tap Telegram Dispatch**: Every vetted lead arrives in Telegram with inline buttons:
+  * `[ ✉️ Send Email ]` sends the pitch from your Gmail with the matching **PDF resume attached**.
+  * `[ ✏️ Edit Draft ]` lets you reply with your own wording before sending.
+  * `[ ❌ Skip ]` dismisses the lead.
+* **Deduplication**: Seen jobs are cached so you never get the same alert twice.
+* **Resume Generator** *(optional)*: Render tailored PDF resumes from JSON with `npm run build:resumes`.
 
 ---
 
 ## 🛠️ Tech Stack
 
-* **Runtime & Language**: Node.js, TypeScript
+* **Runtime & Language**: Node.js 20+, TypeScript
 * **LLM Engine**: Google Gemini API (`@google/generative-ai`)
-* **Enrichment**: RocketReach API v2
+* **Enrichment**: RocketReach API v2, NeverBounce, Verimail
 * **Mobile Interface**: Telegram Bot API (`node-telegram-bot-api`)
-* **Email Dispatch**: Nodemailer (Gmail SMTP + PDF Attachment)
-* **Scraping & Parsing**: Axios, Cheerio
+* **Email Dispatch**: Nodemailer (Gmail SMTP) or a Google Apps Script HTTPS relay
+* **Scraping & Parsing**: Axios, Cheerio, Playwright
+* **Testing**: Vitest
 
 ---
 
 ## 📦 Getting Started
 
 ### 1. Prerequisites
-* Node.js v18+ installed
-* A Telegram account and bot token (from [@BotFather](https://t.me/botfather))
-* A Google AI Studio API key (from [AI Studio](https://aistudio.google.com/apikey))
-* A RocketReach API key (from [RocketReach](https://rocketreach.co/api))
-* A NeverBounce API key (Optional real-time verification from [NeverBounce](https://neverbounce.com))
-* A Gmail account with 2-Step Verification enabled and an [App Password](https://myaccount.google.com/apppasswords)
 
-### 2. Installation
+* Node.js v20+
+* A Telegram bot token (from [@BotFather](https://t.me/botfather)) and your chat ID (from [@userinfobot](https://t.me/userinfobot))
+* A Google AI Studio API key ([AI Studio](https://aistudio.google.com/apikey))
+* A RocketReach API key ([RocketReach](https://rocketreach.co/api))
+* *(Optional)* A NeverBounce or Verimail API key for mailbox verification
+* A Gmail account with 2-Step Verification and an [App Password](https://myaccount.google.com/apppasswords)
 
-Clone this repository and install dependencies:
+### 2. Install
 
 ```bash
 git clone https://github.com/Bemkin/cyborg-job-pipeline.git
@@ -71,78 +81,123 @@ cd cyborg-job-pipeline
 npm install
 ```
 
-### 3. Configuration
-
-Copy `.env.example` to `.env` and provide your credentials:
+### 3. Configure secrets
 
 ```bash
 cp .env.example .env
 ```
 
-Fill in the required environment variables:
+Fill in the values in `.env`. `TELEGRAM_CHAT_ID` is required: the bot ignores every other chat.
 
-```env
-# Google Gemini API
-GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL=gemini-3.5-flash-lite
+### 4. Create your profile
 
-# Telegram Bot
-TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
-TELEGRAM_CHAT_ID=your_personal_telegram_chat_id
-
-# RocketReach API
-ROCKETREACH_API_KEY=your_rocketreach_api_key_here
-
-# Gmail SMTP
-GMAIL_USER=your_email@gmail.com
-GMAIL_APP_PASSWORD=your_16_char_app_password
+```bash
+cp -r examples/profile profile
 ```
 
-### 4. Add Your Resume PDF
-Place your 1-page PDF resume in the root directory named:
-`Bemnet Kibret - Founding Full-Stack Engineer Resume.pdf` *(or update `RESUME_FILENAME` in `src/bot-daemon.ts`)*.
+Edit `profile/profile.json`:
+
+| Field | What it's for |
+| --- | --- |
+| `name`, `location` | Used in the email signature, subject lines and the AI's location filter |
+| `remoteOnly` | When `true`, the AI skips on-site, hybrid and residency-restricted roles |
+| `signatureLinks` | Links appended under your signature |
+| `keywords` | *(Optional)* Stage 1 filter keywords; a sensible default list is used if omitted |
+| `defaultPersona` | Persona used when a track isn't defined |
+| `personas.fullstack` / `backend` / `ai_founding` | Per-track pitch context, tone guidance, subject rules and resume filename. Define at least the default one. |
+
+Put each persona's PDF resume in `profile/`, using the filename from its `resume` field. The `profile/` folder is gitignored. To keep it elsewhere, set `PROFILE_DIR`.
 
 ---
 
 ## 💻 Usage
 
-### Run a Dry Run (Testing Filters without API Calls)
+### Dry run (filters only, no API calls)
+
 ```bash
 npm run start:dry
 ```
 
-### Run the Job Pipeline (Scrape, Enrich & Send Alerts)
+### Run the pipeline (scrape, enrich, draft, alert)
+
 ```bash
 npm start
 ```
-Or on Windows, double-click `run-pipeline.bat`.
 
-### Start the Bot Daemon (Listens for One-Tap Sends)
+On Windows you can double-click `run-pipeline.bat`, or schedule it daily with Task Scheduler.
+
+### Start the bot daemon (listens for your taps)
+
 ```bash
 npm run bot
 ```
-Or on Windows, double-click `run-bot.bat`.
+
+On Windows, `run-bot.bat` runs it in a window and `start-bot-silent.vbs` runs it in the background.
+
+### Send yourself a demo alert
+
+```bash
+npm run test:alert
+```
+
+### Generate tailored resume PDFs (optional)
+
+Describe your resumes in `profile/resumes.json` (see `examples/profile/resumes.json`), then:
+
+```bash
+npm run build:resumes
+```
 
 ---
 
 ## 📱 Telegram Bot Commands
 
-When the daemon is running, you can send these commands to your bot anytime:
-* `/status` — View active daemon status, connected Gmail address, and pending/sent stats.
-* `/testemail` — Sends an instant verification test email with your attached resume to yourself.
+* `/status`: daemon status, connected Gmail address, and pending/sent counts.
+* `/testemail`: sends a test email with your default resume attached to yourself.
+
+---
+
+## ☁️ Deploying the Daemon to Render (optional)
+
+`render.yaml` deploys the bot daemon as a free Render web service so you can approve emails while your laptop is off. The pipeline keeps running locally and syncs drafts to it.
+
+1. Create the service from `render.yaml` and fill in the secret environment variables.
+2. Add your `profile.json` as a **Secret File** named `profile.json` (it's mounted in `/etc/secrets`, which `PROFILE_DIR` already points to).
+3. Give each persona a `resumeUrl` in `profile.json` that points to a hosted copy of its PDF, since binary resumes aren't in the image.
+4. Render's free tier blocks outbound SMTP, so set `GMAIL_WEBHOOK_URL` to a Google Apps Script web app that sends the email. The script must check that the `secret` field in the request matches your `SYNC_SECRET`.
+5. Locally, set `RENDER_DAEMON_URL` and the same `SYNC_SECRET` in `.env`. New drafts sync automatically, or run `npm run sync:cloud` to push existing ones.
+
+The draft API rejects every request unless `SYNC_SECRET` is set and sent in the `x-sync-secret` header.
+
+---
+
+## ⚠️ LinkedIn Scraping
+
+The optional LinkedIn source (`npm run login:linkedin`, then `npm run start:linkedin`) drives a logged-in browser session. Automated scraping is against LinkedIn's Terms of Service and can get your account restricted. It's off unless you log in, and you use it at your own risk.
+
+---
+
+## 🧪 Development
+
+```bash
+npm run typecheck
+npm test
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
 ## 👤 Author
 
 **Bemnet Kibret**
+
 * **GitHub**: [@Bemkin](https://github.com/Bemkin)
 * **LinkedIn**: [linkedin.com/in/bemnet-kibret-054a792a9](https://www.linkedin.com/in/bemnet-kibret-054a792a9/)
 * **Portfolio**: [my-portfolio-theta-flame-45.vercel.app](https://my-portfolio-theta-flame-45.vercel.app)
-* **Live CV**: [my-portfolio-theta-flame-45.vercel.app/resume](https://my-portfolio-theta-flame-45.vercel.app/resume)
 
 ---
 
 ## 📄 License
 
-MIT License © 2026 Bemnet Kibret. Feel free to use and adapt this pipeline for your own job search workflows.
+[MIT](LICENSE) © 2026 Bemnet Kibret
