@@ -109,8 +109,10 @@ export function buildSenderSignature(profile: Profile, persona: CandidatePersona
 }
 
 /**
- * Loads the PDF resume for a persona: from PROFILE_DIR if present, otherwise
- * from the persona's resumeUrl. Returns null when neither is available.
+ * Loads the PDF resume for a persona from PROFILE_DIR, trying in order:
+ * the PDF itself, a base64 copy named "<resume>.b64" (for hosts like Render
+ * whose secret files only hold text), then the persona's resumeUrl.
+ * Returns null when none is available.
  */
 export async function loadResumeAttachment(
   persona: CandidatePersona
@@ -118,6 +120,12 @@ export async function loadResumeAttachment(
   const localPath = path.join(getProfileDir(), persona.resume);
   if (fs.existsSync(localPath)) {
     return { filename: persona.resume, content: fs.readFileSync(localPath) };
+  }
+
+  const base64Path = `${localPath}.b64`;
+  if (fs.existsSync(base64Path)) {
+    const encoded = fs.readFileSync(base64Path, "utf-8").replace(/\s+/g, "");
+    return { filename: persona.resume, content: Buffer.from(encoded, "base64") };
   }
 
   if (persona.resumeUrl) {

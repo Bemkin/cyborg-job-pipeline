@@ -163,7 +163,11 @@ npm run build:resumes
 
 1. Create the service from `render.yaml` and fill in the secret environment variables.
 2. Add your `profile.json` as a **Secret File** named `profile.json` (it's mounted in `/etc/secrets`, which `PROFILE_DIR` already points to).
-3. Give each persona a `resumeUrl` in `profile.json` that points to a hosted copy of its PDF, since binary resumes aren't in the image.
+3. Provide your resumes. Render's Secret Files only hold text, so a PDF uploaded directly arrives blank. Instead, add a base64 copy of each PDF as a Secret File named `<resume filename>.b64`:
+   ```bash
+   base64 -w0 "profile/Jane_Doe_Resume.pdf" > "profile/Jane_Doe_Resume.pdf.b64"
+   ```
+   Alternatively, give each persona a `resumeUrl` in `profile.json` that points to a hosted copy of its PDF. Render file names can't contain spaces, so use underscores in resume filenames.
 4. Render's free tier blocks outbound SMTP, so set `GMAIL_WEBHOOK_URL` to a Google Apps Script web app that sends the email. The script must check that the `secret` field in the request matches your `SYNC_SECRET`.
 5. Locally, set `RENDER_DAEMON_URL` and the same `SYNC_SECRET` in `.env`. New drafts sync automatically, or run `npm run sync:cloud` to push existing ones.
 

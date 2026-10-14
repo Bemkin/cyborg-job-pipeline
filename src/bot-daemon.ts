@@ -117,7 +117,9 @@ export async function sendEmail({
 
     const res = await fetch(webhookUrl.trim(), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      // Declare UTF-8 explicitly so Apps Script doesn't mis-decode em dashes and
+      // emoji in subjects and bodies.
+      headers: { "Content-Type": "application/json; charset=utf-8" },
       body: JSON.stringify(payload),
       redirect: "follow",
     });
