@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import http from "http";
 import axios from "axios";
+import crypto from "crypto";
 import { validateCorporateEmail, verifyWithNeverBounce, verifyWithVerimail } from "./utils/emailValidator";
 
 dotenv.config();
@@ -35,12 +36,45 @@ const RESUME_FILENAME = "Bemnet Kibret - Founding Full-Stack Engineer Resume.pdf
 const RESUME_PATH = path.join(__dirname, "..", RESUME_FILENAME);
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = (process.env.TELEGRAM_CHAT_ID || "").trim();
 const GMAIL_USER = process.env.GMAIL_USER;
 const GMAIL_PASS = (process.env.GMAIL_APP_PASSWORD || "").replace(/\s+/g, "");
+const SYNC_SECRET = (process.env.SYNC_SECRET || "").trim();
 
 if (!TELEGRAM_TOKEN) {
   console.error("❌ TELEGRAM_BOT_TOKEN is missing in .env");
   process.exit(1);
+}
+
+if (!TELEGRAM_CHAT_ID) {
+  console.error("❌ TELEGRAM_CHAT_ID is missing in .env (the bot only answers this chat)");
+  process.exit(1);
+}
+
+if (process.env.GMAIL_WEBHOOK_URL && !SYNC_SECRET) {
+  console.error("❌ SYNC_SECRET is required when GMAIL_WEBHOOK_URL is set");
+  process.exit(1);
+}
+
+function isOwnerChat(chatId: number | string | undefined): boolean {
+  return chatId !== undefined && String(chatId) === TELEGRAM_CHAT_ID;
+}
+
+function hasValidSyncSecret(header: string | string[] | undefined): boolean {
+  if (!SYNC_SECRET || typeof header !== "string") return false;
+  const given = Buffer.from(header);
+  const expected = Buffer.from(SYNC_SECRET);
+  return given.length === expected.length && crypto.timingSafeEqual(given, expected);
+}
+
+// Only PDFs sitting directly in the project root can be attached; draft data
+// arrives over HTTP, so it must never be able to point at arbitrary files.
+function resolveResumeAttachment(filename: string | undefined): { filename: string; path: string } | null {
+  if (!filename || filename !== path.basename(filename) || !filename.toLowerCase().endsWith(".pdf")) {
+    return null;
+  }
+  const fullPath = path.join(__dirname, "..", filename);
+  return fs.existsSync(fullPath) ? { filename, path: fullPath } : null;
 }
 
 if (!GMAIL_USER || !GMAIL_PASS) {
@@ -162,7 +196,7 @@ export async function sendEmail({
       body,
       attachmentBase64,
       attachmentFilename,
-      secret: process.env.SYNC_SECRET || "cyborg_secret_99",
+      secret: SYNC_SECRET,
     };
 
     const res = await fetch(webhookUrl.trim(), {
@@ -256,7 +290,6 @@ export async function startBotDaemon(): Promise<void> {
   // HTTP Server (Render Free Tier Web Service & Keep-Alive)
   // ─────────────────────────────────────────────
   const PORT = process.env.PORT || 3000;
-  const SYNC_SECRET = process.env.SYNC_SECRET;
 
   const server = http.createServer((req, res) => {
     const parsedUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -301,7 +334,7 @@ export async function startBotDaemon(): Promise<void> {
 
     // Drafts query endpoint
     if (req.method === "GET" && pathname === "/api/drafts") {
-      if (SYNC_SECRET && req.headers["x-sync-secret"] !== SYNC_SECRET) {
+      if (!hasValidSyncSecret(req.headers["x-sync-secret"])) {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Unauthorized: Invalid or missing x-sync-secret" }));
         return;
@@ -315,7 +348,7 @@ export async function startBotDaemon(): Promise<void> {
 
     // Draft ingestion endpoint (from laptop or scraper pipeline)
     if (req.method === "POST" && (pathname === "/api/draft" || pathname === "/api/drafts")) {
-      if (SYNC_SECRET && req.headers["x-sync-secret"] !== SYNC_SECRET) {
+      if (!hasValidSyncSecret(req.headers["x-sync-secret"])) {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Unauthorized: Invalid or missing x-sync-secret" }));
         return;
@@ -368,6 +401,7 @@ export async function startBotDaemon(): Promise<void> {
   // Command: /status
   bot.onText(/\/status/, async (msg) => {
     const chatId = msg.chat.id;
+    if (!isOwnerChat(chatId)) return;
     const drafts = loadDrafts();
     const pending = Array.from(drafts.values()).filter((d) => d.status === "pending" || !d.status).length;
     const sent = Array.from(drafts.values()).filter((d) => d.status === "sent").length;
@@ -386,6 +420,7 @@ export async function startBotDaemon(): Promise<void> {
   // Command: /testemail
   bot.onText(/\/testemail/, async (msg) => {
     const chatId = msg.chat.id;
+    if (!isOwnerChat(chatId)) return;
     try {
       await bot.sendMessage(chatId, `⏳ Sending test email to ${GMAIL_USER}...`);
       const testAttachments = fs.existsSync(RESUME_PATH)
@@ -410,6 +445,11 @@ export async function startBotDaemon(): Promise<void> {
     const chatId = query.message?.chat.id;
     const messageId = query.message?.message_id;
     const data = query.data;
+
+    if (!isOwnerChat(chatId) || !isOwnerChat(query.from.id)) {
+      await bot.answerCallbackQuery(query.id);
+      return;
+    }
 
     if (!data || !chatId || !messageId) {
       await bot.answerCallbackQuery(query.id);
@@ -474,19 +514,9 @@ export async function startBotDaemon(): Promise<void> {
         await bot.answerCallbackQuery(query.id, { text: `✉️ Sending email to ${draft.recipientEmail}...` });
 
         // Prepare PDF attachment (persona-specific or default resume)
-        let pathToAttach = RESUME_PATH;
-        let filenameToAttach = RESUME_FILENAME;
-
-        if (draft.resumeFilename) {
-          const localRelativePath = path.join(__dirname, "..", draft.resumeFilename);
-          if (fs.existsSync(localRelativePath)) {
-            pathToAttach = localRelativePath;
-            filenameToAttach = draft.resumeFilename;
-          } else if (draft.resumePath && fs.existsSync(draft.resumePath)) {
-            pathToAttach = draft.resumePath;
-            filenameToAttach = draft.resumeFilename;
-          }
-        }
+        const personaResume = resolveResumeAttachment(draft.resumeFilename);
+        const pathToAttach = personaResume?.path ?? RESUME_PATH;
+        const filenameToAttach = personaResume?.filename ?? RESUME_FILENAME;
 
         const attachments = fs.existsSync(pathToAttach)
           ? [
@@ -588,6 +618,7 @@ export async function startBotDaemon(): Promise<void> {
   // Handle incoming messages for editing
   bot.on("message", async (msg) => {
     const chatId = msg.chat.id;
+    if (!isOwnerChat(chatId)) return;
     const text = msg.text?.trim();
 
     if (!text || text.startsWith("/")) {
