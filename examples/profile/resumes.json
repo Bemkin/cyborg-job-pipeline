@@ -1,0 +1,54 @@
+{
+  "header": {
+    "name": "Jane Doe",
+    "contact": [
+      { "text": "Lisbon, Portugal (Open to Remote)" },
+      { "text": "jane@example.com", "url": "mailto:jane@example.com" },
+      { "text": "Portfolio", "url": "https://janedoe.dev" },
+      { "text": "GitHub", "url": "https://github.com/janedoe" },
+      { "text": "LinkedIn", "url": "https://www.linkedin.com/in/janedoe/" }
+    ]
+  },
+  "resumes": [
+    {
+      "title": "FULL-STACK SOFTWARE ENGINEER",
+      "outputFilename": "Jane Doe - Full-Stack Engineer Resume.pdf",
+      "summary": "Full-stack engineer with 4 years of experience shipping TypeScript, React and Node.js products used by thousands of customers.",
+      "experience": [
+        {
+          "title": "Software Engineer",
+          "company": "Acme Shop",
+          "companyBadge": { "label": "acme.example", "url": "https://acme.example" },
+          "dates": "2022 – Present",
+          "bullets": [
+            { "label": "Checkout Rebuild", "text": "Rebuilt the checkout flow in Next.js, cutting page load time by 40%." },
+            { "label": "Testing", "text": "Introduced Playwright end-to-end tests, halving production regressions." }
+          ]
+        }
+      ],
+      "projects": [
+        {
+          "title": "Open Source Dashboard Kit",
+          "badge": { "label": "GitHub", "url": "https://github.com/janedoe/dashboard-kit" },
+          "tech": "React, TypeScript, Vite",
+          "bullets": [
+            { "label": "Components", "text": "Published a library of accessible dashboard components with 500+ GitHub stars." }
+          ]
+        }
+      ],
+      "skills": [
+        { "category": "Languages", "items": "TypeScript, JavaScript, Python, SQL" },
+        { "category": "Frameworks", "items": "React, Next.js, Node.js, Express" },
+        { "category": "Infrastructure", "items": "PostgreSQL, Docker, AWS, GitHub Actions" }
+      ],
+      "education": [
+        {
+          "institution": "University of Lisbon",
+          "credential": "BSc, Computer Science",
+          "dates": "2017 – 2021",
+          "location": "Lisbon, Portugal"
+        }
+      ]
+    }
+  ]
+}

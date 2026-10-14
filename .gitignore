@@ -9,7 +9,7 @@ drafts_cache.json
 .linkedin-session/
 
 # Your personal profile, resume data and PDFs (see examples/profile/)
-profile/
+/profile/
 *.pdf
 cyborg_task.xml
 .kilo/

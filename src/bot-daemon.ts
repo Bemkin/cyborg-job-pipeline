@@ -107,6 +107,7 @@ export async function sendEmail({
     }
 
     const payload = {
+      fromName,
       to,
       subject,
       body,

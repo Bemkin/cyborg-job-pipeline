@@ -1,0 +1,64 @@
+{
+  "name": "Jane Doe",
+  "location": "Lisbon, Portugal (UTC+0)",
+  "remoteOnly": true,
+  "signatureLinks": [
+    { "label": "GitHub", "url": "https://github.com/janedoe" },
+    { "label": "LinkedIn", "url": "https://www.linkedin.com/in/janedoe/" },
+    { "label": "Portfolio", "url": "https://janedoe.dev" }
+  ],
+  "keywords": [
+    "full-stack",
+    "fullstack",
+    "frontend",
+    "backend",
+    "typescript",
+    "react",
+    "next.js",
+    "node",
+    "postgres",
+    "python",
+    "founding engineer",
+    "applied ai"
+  ],
+  "defaultPersona": "fullstack",
+  "personas": {
+    "fullstack": {
+      "displayName": "Full-Stack & Frontend Engineer",
+      "badgeName": "🎨 Full-Stack & Frontend",
+      "titleInSignature": "Full-Stack Engineer",
+      "resume": "Jane Doe - Full-Stack Engineer Resume.pdf",
+      "context": "I am Jane Doe, a full-stack engineer with 4 years of experience shipping TypeScript, React and Node.js products.\n\nKey Highlights:\n• Rebuilt the checkout flow at Acme Shop in Next.js, cutting page load time by 40%.\n• Designed the PostgreSQL schema and REST API behind a 20k-user SaaS dashboard.\n• Introduced end-to-end testing with Playwright, reducing production regressions by half.\n\nCore Tech Stack:\nTypeScript, React, Next.js, Node.js, PostgreSQL, Prisma, Docker, Playwright.",
+      "pitchGuidance": "Write as a hands-on full-stack engineer who ships polished, well-tested features quickly. Keep the tone grounded and collaborative.",
+      "subjectRules": [
+        { "match": ["frontend", "front-end", "react", "ui"], "subject": "Frontend Engineer Application" },
+        { "match": ["full-stack", "fullstack", "full stack"], "subject": "Full-Stack Engineer Application" }
+      ],
+      "defaultSubject": "Software Engineer Application"
+    },
+    "backend": {
+      "displayName": "Backend Engineer",
+      "badgeName": "⚙️ Backend & Systems",
+      "titleInSignature": "Backend Engineer",
+      "resume": "Jane Doe - Backend Engineer Resume.pdf",
+      "context": "I am Jane Doe, a backend engineer focused on reliable APIs and well-designed relational databases.\n\nKey Highlights:\n• Built idempotent webhook ingestion on AWS Lambda processing 1M+ events per day.\n• Tuned PostgreSQL indexes and queries to bring p95 API latency under 100ms.\n\nCore Tech Stack:\nNode.js, TypeScript, Python, PostgreSQL, Redis, AWS, Docker.",
+      "pitchGuidance": "Write as a detail-oriented backend engineer who cares about data integrity, performance and clean API design.",
+      "subjectRules": [
+        { "match": ["backend", "back-end", "back end"], "subject": "Backend Engineer Application" }
+      ],
+      "defaultSubject": "Backend / Systems Engineer Application"
+    },
+    "ai_founding": {
+      "displayName": "Founding & Applied AI Engineer",
+      "badgeName": "🚀 Founding & Applied AI",
+      "titleInSignature": "Founding Engineer",
+      "resume": "Jane Doe - Founding Engineer Resume.pdf",
+      "context": "I am Jane Doe, an engineer who enjoys taking AI-powered products from zero to production.\n\nKey Highlights:\n• Built an LLM-based support assistant with retrieval over 10k help-center articles.\n• Was the first engineer at a seed-stage startup, owning the stack end to end.\n\nCore Tech Stack:\nTypeScript, Python, LLM APIs, RAG, PostgreSQL + pgvector, Next.js.",
+      "pitchGuidance": "Write with founder-level ownership. Highlight 0-to-1 velocity and shipping AI features to real users.",
+      "subjectRules": [
+        { "match": ["ai", "agentic", "llm", "machine learning"], "subject": "AI Engineer Application" }
+      ],
+      "defaultSubject": "Founding Engineer Application"
+    }
+  }
+}

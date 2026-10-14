@@ -168,7 +168,7 @@ npm run build:resumes
    base64 -w0 "profile/Jane_Doe_Resume.pdf" > "profile/Jane_Doe_Resume.pdf.b64"
    ```
    Alternatively, give each persona a `resumeUrl` in `profile.json` that points to a hosted copy of its PDF. Render file names can't contain spaces, so use underscores in resume filenames.
-4. Render's free tier blocks outbound SMTP, so set `GMAIL_WEBHOOK_URL` to a Google Apps Script web app that sends the email. The script must check that the `secret` field in the request matches your `SYNC_SECRET`.
+4. Render's free tier blocks outbound SMTP, so deploy [`scripts/apps-script-relay.gs`](scripts/apps-script-relay.gs) as a Google Apps Script web app (setup steps are at the top of the file) and set `GMAIL_WEBHOOK_URL` to its URL. Store the same `SYNC_SECRET` in the script's Script Properties.
 5. Locally, set `RENDER_DAEMON_URL` and the same `SYNC_SECRET` in `.env`. New drafts sync automatically, or run `npm run sync:cloud` to push existing ones.
 
 The draft API rejects every request unless `SYNC_SECRET` is set and sent in the `x-sync-secret` header.
