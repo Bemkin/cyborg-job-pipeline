@@ -117,8 +117,8 @@ export async function sendEmail({
 
     const res = await fetch(webhookUrl.trim(), {
       method: "POST",
-      // Declare UTF-8 explicitly so Apps Script doesn't mis-decode em dashes and
-      // emoji in subjects and bodies.
+      // Declare UTF-8 explicitly so Apps Script decodes non-ASCII text reliably.
+      // Emoji in subjects still break inside GmailApp itself, so avoid them there.
       headers: { "Content-Type": "application/json; charset=utf-8" },
       body: JSON.stringify(payload),
       redirect: "follow",
@@ -349,7 +349,9 @@ export async function startBotDaemon(): Promise<void> {
       await sendEmail({
         fromName: profile.name,
         to: GMAIL_USER!,
-        subject: "🤖 Cyborg Pipeline Test Email (with Attached Resume)",
+        // No emoji: GmailApp mangles characters outside the BMP in subjects. The
+        // em dash checks the non-ASCII characters real subjects use.
+        subject: "Cyborg Pipeline Test Email — with Attached Resume",
         body: `Hey ${firstName},\n\nThis is a verification test from your Cyborg Job Pipeline. Your Gmail integration, Telegram one-tap dispatch, and PDF resume attachment are fully operational!\n\nSent at: ${new Date().toISOString()}`,
         attachments: resume ? [resume] : [],
       });
