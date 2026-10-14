@@ -7,6 +7,7 @@ import { validateCorporateEmail, verifyWithNeverBounce, verifyWithVerimail } fro
 import { CachedDraft, loadDrafts, updateDraft, writeDrafts } from "./drafts";
 import { CandidateTrackKey, Profile, TRACK_KEYS, loadProfile } from "./profile";
 import { getPersona, loadResumeAttachment } from "./data/candidatePersonas";
+import { getSmtpConfig, createSmtpTransporter } from "./smtp";
 
 dotenv.config();
 
@@ -16,8 +17,6 @@ dotenv.config();
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = (process.env.TELEGRAM_CHAT_ID || "").trim();
-const GMAIL_USER = process.env.GMAIL_USER;
-const GMAIL_PASS = (process.env.GMAIL_APP_PASSWORD || "").replace(/\s+/g, "");
 const SYNC_SECRET = (process.env.SYNC_SECRET || "").trim();
 
 function exitWithError(message: string): never {
@@ -28,7 +27,18 @@ function exitWithError(message: string): never {
 function checkDaemonConfig(): Profile {
   if (!TELEGRAM_TOKEN) exitWithError("TELEGRAM_BOT_TOKEN is missing in .env");
   if (!TELEGRAM_CHAT_ID) exitWithError("TELEGRAM_CHAT_ID is missing in .env (the bot only answers this chat)");
-  if (!GMAIL_USER || !GMAIL_PASS) exitWithError("GMAIL_USER or GMAIL_APP_PASSWORD is missing in .env");
+
+  const smtp = getSmtpConfig();
+  if (smtp.isCustomSmtp) {
+    if (!smtp.auth.user || !smtp.auth.pass) {
+      exitWithError("SMTP_USER (or GMAIL_USER) and SMTP_PASS (or GMAIL_APP_PASSWORD) are missing in .env for custom SMTP");
+    }
+  } else {
+    if (!smtp.auth.user || !smtp.auth.pass) {
+      exitWithError("GMAIL_USER or GMAIL_APP_PASSWORD is missing in .env (or configure SMTP_HOST, SMTP_USER, SMTP_PASS)");
+    }
+  }
+
   if (process.env.GMAIL_WEBHOOK_URL && !SYNC_SECRET) {
     exitWithError("SYNC_SECRET is required when GMAIL_WEBHOOK_URL is set");
   }
@@ -63,18 +73,7 @@ function personaForDraft(profile: Profile, draft: CachedDraft) {
 // Email Transporter & HTTPS Bridge
 // ─────────────────────────────────────────────
 
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: true, // Port 465 uses SSL/TLS
-  auth: {
-    user: GMAIL_USER,
-    pass: GMAIL_PASS,
-  },
-  connectionTimeout: 15000,
-  greetingTimeout: 15000,
-  socketTimeout: 20000,
-});
+const transporter = createSmtpTransporter();
 
 export interface EmailAttachment {
   filename: string;
@@ -143,8 +142,9 @@ export async function sendEmail({
   }
 
   // Fallback to standard SMTP (for local runs on laptop or paid clouds)
+  const smtp = getSmtpConfig();
   await transporter.sendMail({
-    from: `${fromName} <${GMAIL_USER}>`,
+    from: `${fromName} <${smtp.fromAddress}>`,
     to,
     subject,
     text: body,
@@ -165,10 +165,15 @@ const pendingEdits = new Map<number | string, PendingEdit>();
 
 export async function startBotDaemon(): Promise<void> {
   const profile = checkDaemonConfig();
+  const smtp = getSmtpConfig();
 
   console.log("══════════════════════════════════════════════════");
   console.log("  🤖 CYBORG TELEGRAM BOT DAEMON (v2.1)");
-  console.log("  ✉️ Gmail One-Tap Dispatcher Active");
+  if (smtp.isCustomSmtp) {
+    console.log(`  ✉️ SMTP One-Tap Dispatcher Active (${smtp.host}:${smtp.port})`);
+  } else {
+    console.log("  ✉️ Gmail One-Tap Dispatcher Active");
+  }
   console.log("══════════════════════════════════════════════════");
 
   // Verify Email Delivery Channel
@@ -176,11 +181,11 @@ export async function startBotDaemon(): Promise<void> {
     console.log("🌐 Gmail Webhook HTTPS Bridge configured (Render Free Tier Egress Safe)");
   } else {
     try {
-      console.log(`🔌 Testing Gmail SMTP credentials for ${GMAIL_USER}...`);
+      console.log(`🔌 Testing SMTP connection for ${smtp.fromAddress} on ${smtp.host}:${smtp.port}...`);
       await transporter.verify();
-      console.log("✅ Gmail SMTP connection verified successfully!");
+      console.log("✅ SMTP connection verified successfully!");
     } catch (err) {
-      console.warn("⚠️ Gmail SMTP notice:", err);
+      console.warn("⚠️ SMTP notice:", err);
       console.warn("   (Tip: If running on Render Free Tier, set GMAIL_WEBHOOK_URL to bypass SMTP port blocks)");
     }
   }
@@ -326,11 +331,13 @@ export async function startBotDaemon(): Promise<void> {
     const drafts = loadDrafts();
     const pending = Array.from(drafts.values()).filter((d) => d.status === "pending" || !d.status).length;
     const sent = Array.from(drafts.values()).filter((d) => d.status === "sent").length;
+    const smtp = getSmtpConfig();
+    const accountLabel = smtp.isCustomSmtp ? "SMTP Account" : "Gmail Account";
 
     await bot.sendMessage(
       chatId,
       `🟢 *Cyborg Bot Daemon Active*\n\n` +
-        `• *Gmail Account:* \`${GMAIL_USER}\`\n` +
+        `• *${accountLabel}:* \`${smtp.fromAddress}\`\n` +
         `• *Pending Drafts:* ${pending}\n` +
         `• *Sent via One-Tap:* ${sent}\n\n` +
         `Tap Send on any job notification to fire off cold emails!`,
@@ -342,21 +349,23 @@ export async function startBotDaemon(): Promise<void> {
   bot.onText(/\/testemail/, async (msg) => {
     const chatId = msg.chat.id;
     if (!isOwnerChat(chatId)) return;
+    const smtp = getSmtpConfig();
+    const recipient = smtp.fromAddress;
     try {
-      await bot.sendMessage(chatId, `⏳ Sending test email to ${GMAIL_USER}...`);
+      await bot.sendMessage(chatId, `⏳ Sending test email to ${recipient}...`);
       const resume = await loadResumeAttachment(getPersona(profile, profile.defaultPersona));
       const firstName = profile.name.split(" ")[0];
 
       await sendEmail({
         fromName: profile.name,
-        to: GMAIL_USER!,
+        to: recipient,
         // No emoji: GmailApp mangles characters outside the BMP in subjects. The
         // em dash checks the non-ASCII characters real subjects use.
         subject: "Cyborg Pipeline Test Email — with Attached Resume",
-        body: `Hey ${firstName},\n\nThis is a verification test from your Cyborg Job Pipeline. Your Gmail integration, Telegram one-tap dispatch, and PDF resume attachment are fully operational!\n\nSent at: ${new Date().toISOString()}`,
+        body: `Hey ${firstName},\n\nThis is a verification test from your Cyborg Job Pipeline. Your email integration, Telegram one-tap dispatch, and PDF resume attachment are fully operational!\n\nSent at: ${new Date().toISOString()}`,
         attachments: resume ? [resume] : [],
       });
-      await bot.sendMessage(chatId, `✅ *Test email with attached resume delivered to ${GMAIL_USER}!* Check your inbox.`, { parse_mode: "Markdown" });
+      await bot.sendMessage(chatId, `✅ *Test email with attached resume delivered to ${recipient}!* Check your inbox.`, { parse_mode: "Markdown" });
     } catch (err: any) {
       console.error("Error sending test email:", err);
       await bot.sendMessage(chatId, `❌ *Failed to send test email:* ${err.message}`, { parse_mode: "Markdown" });

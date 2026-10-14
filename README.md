@@ -71,7 +71,7 @@ Applying manually to high-signal roles is broken: hopping between job boards, fi
 * A Google AI Studio API key ([AI Studio](https://aistudio.google.com/apikey))
 * A RocketReach API key ([RocketReach](https://rocketreach.co/api))
 * *(Optional)* A NeverBounce or Verimail API key for mailbox verification
-* A Gmail account with 2-Step Verification and an [App Password](https://myaccount.google.com/apppasswords)
+* A Gmail account with 2-Step Verification and an [App Password](https://myaccount.google.com/apppasswords) (or any custom SMTP provider such as Outlook, Fastmail, Mailgun, Amazon SES, or custom domain)
 
 ### 2. Install
 
@@ -88,6 +88,10 @@ cp .env.example .env
 ```
 
 Fill in the values in `.env`. `TELEGRAM_CHAT_ID` is required: the bot ignores every other chat.
+
+For sending emails, you can use either:
+- **Gmail (Default)**: Provide `GMAIL_USER` and `GMAIL_APP_PASSWORD`.
+- **Custom / Generic SMTP Provider**: Set `SMTP_HOST` (e.g. `smtp.mailgun.org`, `mail.fastmail.com`), optional `SMTP_PORT` (default 587 or 465), optional `SMTP_SECURE` (`true`/`false`), `SMTP_USER`, `SMTP_PASS`, and optional `SMTP_FROM`.
 
 ### 4. Create your profile
 
